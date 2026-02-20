@@ -1,0 +1,33 @@
+# Example S3 TUI Configuration
+# Copy this to ~/.config/anchr/config.yaml and fill in your own credentials
+
+buckets:
+  # AWS S3 - uses default credential chain (~/.aws/credentials, env vars, IAM role)
+  - name: "AWS My Bucket"
+    bucket: "my-production-bucket"
+    region: "us-east-1"
+
+  # AWS S3 with explicit credentials
+  - name: "AWS Dev"
+    bucket: "dev-bucket"
+    region: "us-west-2"
+    access_key: "AKIAIO7EXAMPLE"
+    secret_key: "wJalrdsa7MDENG/bPxRfiCYEXAMPLEKEY"
+
+  # S3-compatible object storage
+  - name: "Better Chat"
+    bucket: "better-chat-dev"
+    endpoint: "https://storage.supabase.co/storage/v1/s3"
+    region: "eu-central-1"
+    access_key: "79915f3ca3e5"
+    secret_key: "1ebe6f5aba93f8adb832856e9"
+    path_style: true
+
+  # With prefix - browse from a specific folder in the bucket
+  - name: "Images (filtered)"
+    bucket: "my-bucket"
+    region: "us-east-1"
+    prefix: "images/photos/"
+
+# Key binding hints:
+# j/↓ - down   k/↑ - up   enter/l - open   esc/h - back   tab - switch pane   q - quit
