@@ -1,3 +1,7 @@
 anchr
 *.exe
 real-config.yaml
+anchr-darwin-amd64.tar.gz
+anchr-darwin-arm64.tar.gz
+anchr-linux-amd64.tar.gz
+anchr-linux-arm64.tar.gz
