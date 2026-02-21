@@ -1,4 +1,0 @@
-e5ef57113efb9da571ca37e3068464ead5994d1681bca480ff855a40ef6e509d  anchr-darwin-amd64.tar.gz
-c36aa61e3e9aeb0c0bb8a7b0372b8e8ca1c27a5b4855f5d1eefaee9851f968d4  anchr-darwin-arm64.tar.gz
-cd29324e7c7b961d96ff7486ca6c2de74a27434d4b255d94e7d217dcf090d774  anchr-linux-amd64.tar.gz
-e8f41b356e6d3c89eff7e28a08474be952e3f27cd733cc7193495c3b009b2c6a  anchr-linux-arm64.tar.gz
