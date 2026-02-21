@@ -1,5 +1,5 @@
 #!/bin/sh
-# anchr installer — curl -fsSL https://raw.githubusercontent.com/jackjakarta/anchr/main/install.sh | sh
+# anchr installer — curl -fsSL https://anchr.jackjakarta.xyz/install.sh | sh
 #
 # Environment variables:
 #   ANCHR_VERSION      — specific version to install (e.g. v0.1.0), default: latest
