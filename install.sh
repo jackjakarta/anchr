@@ -4,13 +4,14 @@
 # Environment variables:
 #   ANCHR_VERSION      — specific version to install (e.g. v0.1.0), default: latest
 #   ANCHR_INSTALL_DIR  — custom install directory, default: /usr/local/bin or ~/.local/bin
-#   GITHUB_TOKEN       — GitHub token for API rate limit avoidance
+#   GH_TOKEN           — GitHub token for private repo access (also accepts GITHUB_TOKEN)
 
 set -e
 
 main() {
     setup_colors
     check_dependencies
+    setup_auth
     detect_platform
     resolve_version
 
@@ -63,6 +64,15 @@ warn() {
 error() {
     printf "%s[error]%s %s\n" "$RED" "$RESET" "$1" >&2
     exit 1
+}
+
+setup_auth() {
+    AUTH_HEADER=""
+    if [ -n "$GH_TOKEN" ]; then
+        AUTH_HEADER="Authorization: token $GH_TOKEN"
+    elif [ -n "$GITHUB_TOKEN" ]; then
+        AUTH_HEADER="Authorization: token $GITHUB_TOKEN"
+    fi
 }
 
 check_dependencies() {
@@ -127,11 +137,6 @@ resolve_version() {
 
     info "Fetching latest release version..."
 
-    AUTH_HEADER=""
-    if [ -n "$GITHUB_TOKEN" ]; then
-        AUTH_HEADER="Authorization: token $GITHUB_TOKEN"
-    fi
-
     API_URL="https://api.github.com/repos/jackjakarta/anchr/releases/latest"
 
     if [ "$HAS_CURL" = true ]; then
@@ -164,9 +169,17 @@ download() {
     info "Downloading ${ARCHIVE}..."
 
     if [ "$HAS_CURL" = true ]; then
-        curl -fsSL -o "${TMPDIR}/${ARCHIVE}" "$DOWNLOAD_URL" || error "Failed to download ${DOWNLOAD_URL}"
+        if [ -n "$AUTH_HEADER" ]; then
+            curl -fsSL -H "$AUTH_HEADER" -o "${TMPDIR}/${ARCHIVE}" "$DOWNLOAD_URL" || error "Failed to download ${DOWNLOAD_URL}"
+        else
+            curl -fsSL -o "${TMPDIR}/${ARCHIVE}" "$DOWNLOAD_URL" || error "Failed to download ${DOWNLOAD_URL}"
+        fi
     else
-        wget -qO "${TMPDIR}/${ARCHIVE}" "$DOWNLOAD_URL" || error "Failed to download ${DOWNLOAD_URL}"
+        if [ -n "$AUTH_HEADER" ]; then
+            wget -qO "${TMPDIR}/${ARCHIVE}" --header="$AUTH_HEADER" "$DOWNLOAD_URL" || error "Failed to download ${DOWNLOAD_URL}"
+        else
+            wget -qO "${TMPDIR}/${ARCHIVE}" "$DOWNLOAD_URL" || error "Failed to download ${DOWNLOAD_URL}"
+        fi
     fi
 }
 
@@ -174,9 +187,17 @@ verify_checksum() {
     CHECKSUMS_URL="https://github.com/jackjakarta/anchr/releases/download/${VERSION}/checksums.txt"
 
     if [ "$HAS_CURL" = true ]; then
-        curl -fsSL -o "${TMPDIR}/checksums.txt" "$CHECKSUMS_URL" 2>/dev/null
+        if [ -n "$AUTH_HEADER" ]; then
+            curl -fsSL -H "$AUTH_HEADER" -o "${TMPDIR}/checksums.txt" "$CHECKSUMS_URL" 2>/dev/null
+        else
+            curl -fsSL -o "${TMPDIR}/checksums.txt" "$CHECKSUMS_URL" 2>/dev/null
+        fi
     else
-        wget -qO "${TMPDIR}/checksums.txt" "$CHECKSUMS_URL" 2>/dev/null
+        if [ -n "$AUTH_HEADER" ]; then
+            wget -qO "${TMPDIR}/checksums.txt" --header="$AUTH_HEADER" "$CHECKSUMS_URL" 2>/dev/null
+        else
+            wget -qO "${TMPDIR}/checksums.txt" "$CHECKSUMS_URL" 2>/dev/null
+        fi
     fi
 
     if [ ! -f "${TMPDIR}/checksums.txt" ] || [ ! -s "${TMPDIR}/checksums.txt" ]; then
