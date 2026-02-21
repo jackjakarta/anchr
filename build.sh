@@ -29,3 +29,7 @@ shasum -a 256 anchr-darwin-amd64.tar.gz
 
 shasum -a 256 anchr-linux-arm64.tar.gz
 shasum -a 256 anchr-linux-amd64.tar.gz
+
+shasum -a 256 anchr-*.tar.gz > checksums.txt
+echo ""
+echo "Checksums written to checksums.txt"

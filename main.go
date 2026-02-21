@@ -12,9 +12,17 @@ import (
 	"github.com/jackjakarta/anchr/ui"
 )
 
+var version = "dev"
+
 func main() {
+	versionFlag := flag.Bool("version", false, "print version")
 	configPath := flag.String("config", "", "path to config file")
 	flag.Parse()
+
+	if *versionFlag {
+		fmt.Printf("anchr %s\n", version)
+		os.Exit(0)
+	}
 
 	cfg, err := config.Load(*configPath)
 	if err != nil {
