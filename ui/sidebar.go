@@ -6,11 +6,11 @@ import (
 )
 
 type sidebar struct {
-	items    []string
-	cursor   int
-	focused  bool
-	height   int
-	offset   int
+	items   []string
+	cursor  int
+	focused bool
+	height  int
+	offset  int
 }
 
 func newSidebar(names []string) sidebar {

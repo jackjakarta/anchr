@@ -22,13 +22,13 @@ const (
 )
 
 type Model struct {
-	sidebar  sidebar
-	browser  browser
-	focus    focus
-	clients  []*s3client.Client
-	configs  []config.BucketConfig
-	width    int
-	height   int
+	sidebar sidebar
+	browser browser
+	focus   focus
+	clients []*s3client.Client
+	configs []config.BucketConfig
+	width   int
+	height  int
 }
 
 func NewModel(cfg *config.Config, clients []*s3client.Client) Model {
