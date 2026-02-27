@@ -95,6 +95,18 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case key.Matches(msg, keys.Left):
+		m.focus = focusSidebar
+		m.sidebar.focused = true
+		m.browser.focused = false
+		return m, nil
+
+	case key.Matches(msg, keys.Right):
+		m.focus = focusBrowser
+		m.sidebar.focused = false
+		m.browser.focused = true
+		return m, nil
+
 	case key.Matches(msg, keys.Up):
 		if m.focus == focusSidebar {
 			m.sidebar.cursorUp()
@@ -238,7 +250,7 @@ func (m Model) View() string {
 
 	// Status bar
 	status := statusBarStyle.Width(m.width).Render(
-		fmt.Sprintf(" ↑↓/jk: navigate  enter/l: open  esc/h: back  tab: switch pane  q: quit"),
+		fmt.Sprintf(" ↑↓/jk: navigate  enter/l: open  esc/h: back  tab/←→: switch pane  q: quit"),
 	)
 	sb.WriteString(status)
 
