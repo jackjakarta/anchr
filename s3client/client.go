@@ -2,6 +2,8 @@ package s3client
 
 import (
 	"context"
+	"io"
+	"os"
 	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -101,4 +103,25 @@ func (c *Client) ListObjects(ctx context.Context, prefix string) (*ListResult, e
 	}
 
 	return result, nil
+}
+
+// DownloadObject streams the object at key to destPath on the local filesystem.
+func (c *Client) DownloadObject(ctx context.Context, key, destPath string) error {
+	out, err := c.s3.GetObject(ctx, &s3.GetObjectInput{
+		Bucket: aws.String(c.bucket),
+		Key:    aws.String(key),
+	})
+	if err != nil {
+		return err
+	}
+	defer out.Body.Close()
+
+	f, err := os.Create(destPath)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	_, err = io.Copy(f, out.Body)
+	return err
 }

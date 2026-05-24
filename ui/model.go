@@ -3,6 +3,8 @@ package ui
 import (
 	"context"
 	"fmt"
+	"os/exec"
+	"path"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/key"
@@ -29,6 +31,7 @@ type Model struct {
 	configs []config.BucketConfig
 	width   int
 	height  int
+	status  string
 }
 
 func NewModel(cfg *config.Config, clients []*s3client.Client) Model {
@@ -71,6 +74,26 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case DownloadPathChosenMsg:
+		if msg.Cancelled {
+			return m, nil
+		}
+		if msg.Err != nil {
+			m.status = fmt.Sprintf("Download failed: %s", msg.Err)
+			return m, nil
+		}
+		m.browser.downloading = true
+		return m, m.downloadFile(msg.ClientIdx, msg.Key, msg.DestPath)
+
+	case FileDownloadedMsg:
+		m.browser.downloading = false
+		if msg.Err != nil {
+			m.status = fmt.Sprintf("Download failed: %s", msg.Err)
+		} else {
+			m.status = fmt.Sprintf("Downloaded to %s", msg.DestPath)
+		}
+		return m, nil
+
 	case tea.KeyMsg:
 		return m.handleKey(msg)
 	}
@@ -79,6 +102,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// Any keypress dismisses a lingering status message.
+	m.status = ""
+
 	switch {
 	case key.Matches(msg, keys.Quit):
 		return m, tea.Quit
@@ -132,6 +158,12 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, keys.Back):
 		if m.focus == focusBrowser {
 			return m.goBack()
+		}
+		return m, nil
+
+	case key.Matches(msg, keys.Download):
+		if m.focus == focusBrowser {
+			return m.startDownload()
 		}
 		return m, nil
 	}
@@ -198,6 +230,47 @@ func (m Model) loadObjects(clientIdx int, prefix string) tea.Cmd {
 	}
 }
 
+func (m Model) startDownload() (tea.Model, tea.Cmd) {
+	item, ok := m.browser.selectedItem()
+	if !ok || item.IsDir || item.Name == "../" {
+		return m, nil
+	}
+	m.status = ""
+	return m, chooseDownloadDest(m.sidebar.cursor, item.Key, path.Base(item.Key))
+}
+
+// chooseDownloadDest opens the native macOS save panel via osascript and
+// reports the chosen destination path (or a user cancellation).
+func chooseDownloadDest(clientIdx int, key, defaultName string) tea.Cmd {
+	return func() tea.Msg {
+		script := fmt.Sprintf(
+			`POSIX path of (choose file name with prompt "Save file as:" `+
+				`default name %q default location (path to downloads folder))`,
+			defaultName,
+		)
+		out, err := exec.Command("osascript", "-e", script).Output()
+		if err != nil {
+			if ee, ok := err.(*exec.ExitError); ok && strings.Contains(string(ee.Stderr), "-128") {
+				return DownloadPathChosenMsg{Cancelled: true}
+			}
+			return DownloadPathChosenMsg{Err: err}
+		}
+		dest := strings.TrimRight(string(out), "\r\n")
+		if dest == "" {
+			return DownloadPathChosenMsg{Cancelled: true}
+		}
+		return DownloadPathChosenMsg{ClientIdx: clientIdx, Key: key, DestPath: dest}
+	}
+}
+
+func (m Model) downloadFile(clientIdx int, key, destPath string) tea.Cmd {
+	client := m.clients[clientIdx]
+	return func() tea.Msg {
+		err := client.DownloadObject(context.Background(), key, destPath)
+		return FileDownloadedMsg{DestPath: destPath, Err: err}
+	}
+}
+
 func (m *Model) updateLayout() {
 	// Reserve 2 rows for title bar and status bar
 	contentHeight := m.height - 2
@@ -249,9 +322,16 @@ func (m Model) View() string {
 	sb.WriteString("\n")
 
 	// Status bar
-	status := statusBarStyle.Width(m.width).Render(
-		fmt.Sprintf(" ↑↓/jk: navigate  enter/l: open  esc/h: back  tab/←→: switch pane  q: quit"),
-	)
+	var statusText string
+	switch {
+	case m.browser.downloading:
+		statusText = " Downloading..."
+	case m.status != "":
+		statusText = " " + m.status
+	default:
+		statusText = " ↑↓/jk: navigate  enter/l: open  esc/h: back  D: download  tab/←→: switch pane  q: quit"
+	}
+	status := statusBarStyle.Width(m.width).Render(statusText)
 	sb.WriteString(status)
 
 	return sb.String()

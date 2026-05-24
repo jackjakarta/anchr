@@ -14,3 +14,18 @@ type ObjectsLoadedMsg struct {
 type NavigateMsg struct {
 	Prefix string
 }
+
+// DownloadPathChosenMsg is emitted after the native save dialog closes.
+type DownloadPathChosenMsg struct {
+	ClientIdx int
+	Key       string
+	DestPath  string
+	Cancelled bool
+	Err       error
+}
+
+// FileDownloadedMsg is emitted after a download completes (or fails).
+type FileDownloadedMsg struct {
+	DestPath string
+	Err      error
+}
