@@ -37,9 +37,13 @@ buckets:
 
 func Load(path string) (*Config, error) {
 	if path == "" {
-		configDir, err := os.UserConfigDir()
-		if err != nil {
-			return nil, fmt.Errorf("cannot determine config directory: %w", err)
+		configDir := os.Getenv("XDG_CONFIG_HOME")
+		if configDir == "" {
+			home, err := os.UserHomeDir()
+			if err != nil {
+				return nil, fmt.Errorf("cannot determine home directory: %w", err)
+			}
+			configDir = filepath.Join(home, ".config")
 		}
 		path = filepath.Join(configDir, "anchr", "config.yaml")
 	}

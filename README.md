@@ -12,10 +12,10 @@ on macOS maybe you need to do this, but try without first:
 xattr -d com.apple.quarantine "$INSTALL_PATH"
 ```
 
-macOS config location:
+config location:
 
 ```
-/Library/Application Support/anchr
+~/.config/anchr/config.yaml
 ```
 
 anchr binary location:
