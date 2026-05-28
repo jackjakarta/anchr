@@ -16,7 +16,7 @@ A fast terminal UI for browsing S3 and S3-compatible object storage.
 Recommended — install the latest release with one command:
 
 ```sh
-curl -fsSL https://anchr.jackjakarta.xyz/install.sh | bash
+curl -fsSL https://anchr.jackjakarta.guru/install.sh | bash
 ```
 
 Builds are available for Linux and macOS (`amd64` and `arm64`). The script

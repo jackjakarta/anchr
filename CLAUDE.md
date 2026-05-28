@@ -77,7 +77,7 @@ support means replacing this with a cross-platform path prompt.
   and publishes the tarballs + `checksums.txt` as a GitHub release. The version
   is injected via `-ldflags "-X main.version=…"`.
 - All pushes are mirrored to GitLab (`mirror-gitlab.yml`).
-- `install.sh` is served at `anchr.jackjakarta.xyz` (see `devops/nginx.conf`,
+- `install.sh` is served at `anchr.jackjakarta.guru` (see `devops/nginx.conf`,
   `CNAME`); it downloads the matching release tarball and verifies checksums.
 
 ## Libraries
