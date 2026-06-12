@@ -29,3 +29,9 @@ type FileDownloadedMsg struct {
 	DestPath string
 	Err      error
 }
+
+// PresignedURLGeneratedMsg is emitted after a presigned GET URL is minted.
+type PresignedURLGeneratedMsg struct {
+	URL string
+	Err error
+}

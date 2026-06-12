@@ -6,7 +6,9 @@ import (
 	"os/exec"
 	"path"
 	"strings"
+	"time"
 
+	"github.com/atotto/clipboard"
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
@@ -15,6 +17,9 @@ import (
 	"github.com/jackjakarta/anchr/config"
 	"github.com/jackjakarta/anchr/s3client"
 )
+
+// presignExpiry is how long generated presigned GET URLs stay valid.
+const presignExpiry = time.Hour
 
 type focus int
 
@@ -94,6 +99,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case PresignedURLGeneratedMsg:
+		if msg.Err != nil {
+			m.status = fmt.Sprintf("Presign failed: %s", msg.Err)
+			return m, nil
+		}
+		if err := clipboard.WriteAll(msg.URL); err != nil {
+			m.status = fmt.Sprintf("Copy failed: %s", err)
+			return m, nil
+		}
+		m.status = "Presigned URL copied to clipboard (valid 1h)"
+		return m, nil
+
 	case tea.KeyMsg:
 		return m.handleKey(msg)
 	}
@@ -164,6 +181,24 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, keys.Download):
 		if m.focus == focusBrowser {
 			return m.startDownload()
+		}
+		return m, nil
+
+	case key.Matches(msg, keys.CopyKey):
+		if m.focus == focusBrowser {
+			return m.copyToClipboard(false)
+		}
+		return m, nil
+
+	case key.Matches(msg, keys.CopyURI):
+		if m.focus == focusBrowser {
+			return m.copyToClipboard(true)
+		}
+		return m, nil
+
+	case key.Matches(msg, keys.PresignURL):
+		if m.focus == focusBrowser {
+			return m.startPresign()
 		}
 		return m, nil
 	}
@@ -271,6 +306,43 @@ func (m Model) downloadFile(clientIdx int, key, destPath string) tea.Cmd {
 	}
 }
 
+// copyToClipboard yanks the selected object's key (or s3://bucket/key when uri
+// is true) to the system clipboard.
+func (m Model) copyToClipboard(uri bool) (tea.Model, tea.Cmd) {
+	item, ok := m.browser.selectedItem()
+	if !ok || item.IsDir || item.Name == "../" {
+		return m, nil
+	}
+	text, label := item.Key, "key"
+	if uri {
+		text = fmt.Sprintf("s3://%s/%s", m.browser.bucket, item.Key)
+		label = "S3 URI"
+	}
+	if err := clipboard.WriteAll(text); err != nil {
+		m.status = fmt.Sprintf("Copy failed: %s", err)
+		return m, nil
+	}
+	m.status = fmt.Sprintf("Copied %s to clipboard", label)
+	return m, nil
+}
+
+func (m Model) startPresign() (tea.Model, tea.Cmd) {
+	item, ok := m.browser.selectedItem()
+	if !ok || item.IsDir || item.Name == "../" {
+		return m, nil
+	}
+	m.status = "Generating presigned URL..."
+	return m, m.presignURL(m.sidebar.cursor, item.Key)
+}
+
+func (m Model) presignURL(clientIdx int, key string) tea.Cmd {
+	client := m.clients[clientIdx]
+	return func() tea.Msg {
+		url, err := client.PresignGetObject(context.Background(), key, presignExpiry)
+		return PresignedURLGeneratedMsg{URL: url, Err: err}
+	}
+}
+
 func (m *Model) updateLayout() {
 	// Reserve 2 rows for title bar and status bar
 	contentHeight := m.height - 2
@@ -329,7 +401,7 @@ func (m Model) View() string {
 	case m.status != "":
 		statusText = " " + m.status
 	default:
-		statusText = " ↑↓/jk: navigate  enter/l: open  esc/h: back  D: download  tab/←→: switch pane  q: quit"
+		statusText = " ↑↓/jk: nav  enter/l: open  esc/h: back  D: download  y/Y: copy key/uri  u: presign  tab: pane  q: quit"
 	}
 	status := statusBarStyle.Width(m.width).Render(statusText)
 	sb.WriteString(status)

@@ -3,15 +3,18 @@ package ui
 import "github.com/charmbracelet/bubbles/key"
 
 type keyMap struct {
-	Up       key.Binding
-	Down     key.Binding
-	Enter    key.Binding
-	Back     key.Binding
-	Tab      key.Binding
-	Left     key.Binding
-	Right    key.Binding
-	Download key.Binding
-	Quit     key.Binding
+	Up         key.Binding
+	Down       key.Binding
+	Enter      key.Binding
+	Back       key.Binding
+	Tab        key.Binding
+	Left       key.Binding
+	Right      key.Binding
+	Download   key.Binding
+	CopyKey    key.Binding
+	CopyURI    key.Binding
+	PresignURL key.Binding
+	Quit       key.Binding
 }
 
 var keys = keyMap{
@@ -46,6 +49,18 @@ var keys = keyMap{
 	Download: key.NewBinding(
 		key.WithKeys("D"), // Shift+D arrives as uppercase "D"
 		key.WithHelp("D", "download"),
+	),
+	CopyKey: key.NewBinding(
+		key.WithKeys("y"),
+		key.WithHelp("y", "copy key"),
+	),
+	CopyURI: key.NewBinding(
+		key.WithKeys("Y"), // Shift+y arrives as uppercase "Y"
+		key.WithHelp("Y", "copy uri"),
+	),
+	PresignURL: key.NewBinding(
+		key.WithKeys("u"),
+		key.WithHelp("u", "presign url"),
 	),
 	Quit: key.NewBinding(
 		key.WithKeys("q", "ctrl+c"),
