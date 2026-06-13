@@ -2,6 +2,8 @@
 
 A fast terminal UI for browsing S3 and S3-compatible object storage.
 
+![anchr screenshot](https://jakarta-image-hosting.nbg1.your-objectstorage.com/anchr-screenshot.png)
+
 ## Features
 
 - Browse multiple buckets from a single config
