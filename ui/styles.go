@@ -71,6 +71,18 @@ var (
 	emptyStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("241")).
 			Italic(true)
+
+	previewBox = lipgloss.NewStyle().
+			BorderStyle(lipgloss.RoundedBorder()).
+			BorderForeground(lipgloss.Color("240")).
+			Padding(0, 1)
+
+	previewTitle = lipgloss.NewStyle().
+			Bold(true).
+			Foreground(lipgloss.Color("75"))
+
+	previewMeta = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("242"))
 )
 
 const sidebarWidth = 24

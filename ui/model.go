@@ -6,7 +6,9 @@ import (
 	"os/exec"
 	"path"
 	"strings"
+	"time"
 
+	"github.com/atotto/clipboard"
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
@@ -15,6 +17,9 @@ import (
 	"github.com/jackjakarta/anchr/config"
 	"github.com/jackjakarta/anchr/s3client"
 )
+
+// presignExpiry is how long generated presigned GET URLs stay valid.
+const presignExpiry = time.Hour
 
 type focus int
 
@@ -26,6 +31,7 @@ const (
 type Model struct {
 	sidebar sidebar
 	browser browser
+	preview preview
 	focus   focus
 	clients []*s3client.Client
 	configs []config.BucketConfig
@@ -94,6 +100,26 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case PresignedURLGeneratedMsg:
+		if msg.Err != nil {
+			m.status = fmt.Sprintf("Presign failed: %s", msg.Err)
+			return m, nil
+		}
+		if err := clipboard.WriteAll(msg.URL); err != nil {
+			m.status = fmt.Sprintf("Copy failed: %s", err)
+			return m, nil
+		}
+		m.status = "Presigned URL copied to clipboard (valid 1h)"
+		return m, nil
+
+	case ObjectPreviewLoadedMsg:
+		if msg.Err != nil {
+			m.preview.setError(msg.Err)
+		} else {
+			m.preview.setContent(msg.Content, msg.ContentType)
+		}
+		return m, nil
+
 	case tea.KeyMsg:
 		return m.handleKey(msg)
 	}
@@ -104,6 +130,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// Any keypress dismisses a lingering status message.
 	m.status = ""
+
+	// While the preview popup is open it captures all keys so they don't leak
+	// to the browser underneath.
+	if m.preview.active {
+		switch {
+		case msg.String() == "ctrl+c":
+			return m, tea.Quit
+		case key.Matches(msg, keys.Up):
+			m.preview.scrollUp()
+		case key.Matches(msg, keys.Down):
+			m.preview.scrollDown(m.contentHeight())
+		case key.Matches(msg, keys.Back), key.Matches(msg, keys.Preview), key.Matches(msg, keys.Quit):
+			m.preview.close()
+		}
+		return m, nil
+	}
 
 	switch {
 	case key.Matches(msg, keys.Quit):
@@ -164,6 +206,42 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, keys.Download):
 		if m.focus == focusBrowser {
 			return m.startDownload()
+		}
+		return m, nil
+
+	case key.Matches(msg, keys.CopyKey):
+		if m.focus == focusBrowser {
+			return m.copyToClipboard(false)
+		}
+		return m, nil
+
+	case key.Matches(msg, keys.CopyURI):
+		if m.focus == focusBrowser {
+			return m.copyToClipboard(true)
+		}
+		return m, nil
+
+	case key.Matches(msg, keys.PresignURL):
+		if m.focus == focusBrowser {
+			return m.startPresign()
+		}
+		return m, nil
+
+	case key.Matches(msg, keys.Preview):
+		if m.focus == focusBrowser {
+			return m.startPreview()
+		}
+		return m, nil
+
+	case key.Matches(msg, keys.Sort):
+		if m.focus == focusBrowser {
+			m.browser.cycleSort()
+		}
+		return m, nil
+
+	case key.Matches(msg, keys.SortReverse):
+		if m.focus == focusBrowser {
+			m.browser.toggleReverse()
 		}
 		return m, nil
 	}
@@ -271,12 +349,71 @@ func (m Model) downloadFile(clientIdx int, key, destPath string) tea.Cmd {
 	}
 }
 
-func (m *Model) updateLayout() {
-	// Reserve 2 rows for title bar and status bar
-	contentHeight := m.height - 2
-	if contentHeight < 1 {
-		contentHeight = 1
+// copyToClipboard yanks the selected object's key (or s3://bucket/key when uri
+// is true) to the system clipboard.
+func (m Model) copyToClipboard(uri bool) (tea.Model, tea.Cmd) {
+	item, ok := m.browser.selectedItem()
+	if !ok || item.IsDir || item.Name == "../" {
+		return m, nil
 	}
+	text, label := item.Key, "key"
+	if uri {
+		text = fmt.Sprintf("s3://%s/%s", m.browser.bucket, item.Key)
+		label = "S3 URI"
+	}
+	if err := clipboard.WriteAll(text); err != nil {
+		m.status = fmt.Sprintf("Copy failed: %s", err)
+		return m, nil
+	}
+	m.status = fmt.Sprintf("Copied %s to clipboard", label)
+	return m, nil
+}
+
+func (m Model) startPresign() (tea.Model, tea.Cmd) {
+	item, ok := m.browser.selectedItem()
+	if !ok || item.IsDir || item.Name == "../" {
+		return m, nil
+	}
+	m.status = "Generating presigned URL..."
+	return m, m.presignURL(m.sidebar.cursor, item.Key)
+}
+
+func (m Model) presignURL(clientIdx int, key string) tea.Cmd {
+	client := m.clients[clientIdx]
+	return func() tea.Msg {
+		url, err := client.PresignGetObject(context.Background(), key, presignExpiry)
+		return PresignedURLGeneratedMsg{URL: url, Err: err}
+	}
+}
+
+func (m Model) startPreview() (tea.Model, tea.Cmd) {
+	item, ok := m.browser.selectedItem()
+	if !ok || item.IsDir || item.Name == "../" {
+		return m, nil
+	}
+	m.preview.open(item.Name)
+	return m, m.loadPreview(m.sidebar.cursor, item.Key)
+}
+
+func (m Model) loadPreview(clientIdx int, key string) tea.Cmd {
+	client := m.clients[clientIdx]
+	return func() tea.Msg {
+		content, contentType, err := client.PreviewObject(context.Background(), key, previewMaxBytes)
+		return ObjectPreviewLoadedMsg{Content: content, ContentType: contentType, Err: err}
+	}
+}
+
+// contentHeight is the screen height minus the title and status bars.
+func (m Model) contentHeight() int {
+	h := m.height - 2
+	if h < 1 {
+		h = 1
+	}
+	return h
+}
+
+func (m *Model) updateLayout() {
+	contentHeight := m.contentHeight()
 	m.sidebar.height = contentHeight
 	m.browser.height = contentHeight
 	m.browser.width = m.width - sidebarWidth - 1 // -1 for border
@@ -298,38 +435,42 @@ func (m Model) View() string {
 	sb.WriteString("\n")
 
 	// Content area
-	contentHeight := m.height - 2
-	if contentHeight < 1 {
-		contentHeight = 1
+	contentHeight := m.contentHeight()
+
+	if m.preview.active {
+		// The preview popup replaces the two-pane content while open.
+		sb.WriteString(m.preview.View(m.width, contentHeight, m.browser.spinner.View()))
+	} else {
+		// Sidebar
+		sideView := m.sidebar.View()
+		sideView = sidebarStyle.
+			Width(sidebarWidth).
+			Height(contentHeight).
+			Render(sideView)
+
+		// Browser
+		browseView := m.browser.View()
+		browseView = lipgloss.NewStyle().
+			Width(m.width - sidebarWidth - 2).
+			Height(contentHeight).
+			Render(browseView)
+
+		content := lipgloss.JoinHorizontal(lipgloss.Top, sideView, browseView)
+		sb.WriteString(content)
 	}
-
-	// Sidebar
-	sideView := m.sidebar.View()
-	sideView = sidebarStyle.
-		Width(sidebarWidth).
-		Height(contentHeight).
-		Render(sideView)
-
-	// Browser
-	browseView := m.browser.View()
-	browseView = lipgloss.NewStyle().
-		Width(m.width - sidebarWidth - 2).
-		Height(contentHeight).
-		Render(browseView)
-
-	content := lipgloss.JoinHorizontal(lipgloss.Top, sideView, browseView)
-	sb.WriteString(content)
 	sb.WriteString("\n")
 
 	// Status bar
 	var statusText string
 	switch {
+	case m.preview.active:
+		statusText = " ↑↓/jk: scroll  esc/q/p: close"
 	case m.browser.downloading:
 		statusText = " Downloading..."
 	case m.status != "":
 		statusText = " " + m.status
 	default:
-		statusText = " ↑↓/jk: navigate  enter/l: open  esc/h: back  D: download  tab/←→: switch pane  q: quit"
+		statusText = " ↑↓/jk: nav  enter/l: open  esc/h: back  D: download  p: preview  y/Y: copy key/uri  u: presign  s/S: sort  tab: pane  q: quit"
 	}
 	status := statusBarStyle.Width(m.width).Render(statusText)
 	sb.WriteString(status)
