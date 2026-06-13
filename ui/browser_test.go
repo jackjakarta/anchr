@@ -337,7 +337,7 @@ func TestRenderItem(t *testing.T) {
 		b := browser{items: []s3client.S3Item{{Name: long}}, prefix: ""}
 		nameW := 12
 		got := b.renderItem(0, nameW)
-		wantTrunc := long[:nameW-3] + "..." // "this-is-a..."
+		wantTrunc := truncate(long, nameW) // "this-is-a-v…"
 		if !strings.Contains(got, wantTrunc) {
 			t.Errorf("renderItem = %q, want it to contain truncated %q", got, wantTrunc)
 		}
@@ -352,8 +352,8 @@ func TestRenderItem(t *testing.T) {
 		if !strings.Contains(got, "docs") {
 			t.Fatalf("renderItem = %q, want it to contain %q", got, "docs")
 		}
-		if !strings.Contains(got, "-") {
-			t.Errorf("renderItem = %q, want dir size column to contain %q", got, "-")
+		if !strings.Contains(got, "—") {
+			t.Errorf("renderItem = %q, want dir size column to contain em dash %q", got, "—")
 		}
 		if strings.Contains(got, "KB") || strings.Contains(got, "5000") {
 			t.Errorf("renderItem = %q, dir should not render a byte size", got)

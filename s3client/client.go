@@ -103,6 +103,8 @@ func (c *Client) ListObjects(ctx context.Context, prefix string) (*ListResult, e
 				Name:         name,
 				Size:         aws.ToInt64(obj.Size),
 				LastModified: aws.ToTime(obj.LastModified),
+				ETag:         strings.Trim(aws.ToString(obj.ETag), `"`), // S3 wraps the ETag in quotes
+				StorageClass: string(obj.StorageClass),
 			})
 		}
 	}

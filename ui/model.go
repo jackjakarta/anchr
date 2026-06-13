@@ -28,16 +28,27 @@ const (
 	focusBrowser
 )
 
+// layoutState holds the responsive widths/flags resolved by updateLayout so
+// View doesn't have to recompute the breakpoint math.
+type layoutState struct {
+	sidebarW    int
+	previewW    int
+	showPreview bool
+}
+
 type Model struct {
-	sidebar sidebar
-	browser browser
-	preview preview
-	focus   focus
-	clients []*s3client.Client
-	configs []config.BucketConfig
-	width   int
-	height  int
-	status  string
+	sidebar         sidebar
+	browser         browser
+	preview         preview
+	focus           focus
+	clients         []*s3client.Client
+	configs         []config.BucketConfig
+	width           int
+	height          int
+	status          string
+	layout          layoutState
+	openBucketIdx   int    // index of the bucket whose objects are loaded (-1 = none)
+	downloadingName string // base name of the in-flight download, for the transfer bar
 }
 
 func NewModel(cfg *config.Config, clients []*s3client.Client) Model {
@@ -47,11 +58,12 @@ func NewModel(cfg *config.Config, clients []*s3client.Client) Model {
 	}
 
 	return Model{
-		sidebar: newSidebar(names),
-		browser: newBrowser(),
-		focus:   focusSidebar,
-		clients: clients,
-		configs: cfg.Buckets,
+		sidebar:       newSidebar(names),
+		browser:       newBrowser(),
+		focus:         focusSidebar,
+		clients:       clients,
+		configs:       cfg.Buckets,
+		openBucketIdx: -1,
 	}
 }
 
@@ -68,6 +80,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case spinner.TickMsg:
+		m.browser.tickCount++ // drives the indeterminate transfer bar
 		var cmd tea.Cmd
 		m.browser.spinner, cmd = m.browser.spinner.Update(msg)
 		return m, cmd
@@ -89,10 +102,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.browser.downloading = true
+		m.downloadingName = path.Base(msg.Key)
+		m.updateLayout() // the transfer bar steals a content row
 		return m, m.downloadFile(msg.ClientIdx, msg.Key, msg.DestPath)
 
 	case FileDownloadedMsg:
 		m.browser.downloading = false
+		m.downloadingName = ""
+		m.updateLayout() // give the content row back
 		if msg.Err != nil {
 			m.status = fmt.Sprintf("Download failed: %s", msg.Err)
 		} else {
@@ -257,6 +274,7 @@ func (m Model) selectBucket() (tea.Model, tea.Cmd) {
 	client := m.clients[idx]
 	prefix := client.InitialPrefix()
 
+	m.openBucketIdx = idx
 	m.browser.bucket = m.configs[idx].Bucket
 	m.browser.prefix = prefix
 	m.browser.prefixStack = nil
@@ -403,23 +421,55 @@ func (m Model) loadPreview(clientIdx int, key string) tea.Cmd {
 	}
 }
 
-// contentHeight is the screen height minus the title and status bars.
+// transferBarVisible reports whether the indeterminate transfer bar row is
+// currently shown (a download is in flight).
+func (m Model) transferBarVisible() bool {
+	return m.browser.downloading
+}
+
+// contentHeight is the screen height minus the top bar, status bar, and (when a
+// download is in flight) the transfer bar.
 func (m Model) contentHeight() int {
-	h := m.height - 2
+	chrome := 2 // top bar + status bar
+	if m.transferBarVisible() {
+		chrome++
+	}
+	h := m.height - chrome
 	if h < 1 {
 		h = 1
 	}
 	return h
 }
 
+// updateLayout resolves responsive widths into m.layout and propagates the
+// content height/width to the sub-views.
+//
+//	width >= 90        three columns (sidebar | list | preview)
+//	70 <= width < 90   preview hidden
+//	width < 70         preview hidden + narrow sidebar
 func (m *Model) updateLayout() {
-	contentHeight := m.contentHeight()
-	m.sidebar.height = contentHeight
-	m.browser.height = contentHeight
-	m.browser.width = m.width - sidebarWidth - 1 // -1 for border
-	if m.browser.width < 10 {
-		m.browser.width = 10
+	ch := m.contentHeight()
+
+	sideW := sidebarWidth
+	if m.width < narrowSidebarBelow {
+		sideW = sidebarWidthNarrow
 	}
+	previewW := previewPaneWidth
+	showPreview := m.width >= hidePreviewBelow
+	if !showPreview {
+		previewW = 0
+	}
+
+	listW := m.width - sideW - previewW
+	if listW < 10 {
+		listW = 10
+	}
+
+	m.layout = layoutState{sidebarW: sideW, previewW: previewW, showPreview: showPreview}
+	m.sidebar.width = sideW
+	m.sidebar.height = ch
+	m.browser.width = listW
+	m.browser.height = ch
 }
 
 func (m Model) View() string {
@@ -428,52 +478,227 @@ func (m Model) View() string {
 	}
 
 	var sb strings.Builder
+	ch := m.contentHeight()
 
-	// Title bar
-	title := titleStyle.Width(m.width).Render("S3 Browser")
-	sb.WriteString(title)
+	sb.WriteString(m.renderTopBar())
 	sb.WriteString("\n")
-
-	// Content area
-	contentHeight := m.contentHeight()
 
 	if m.preview.active {
-		// The preview popup replaces the two-pane content while open.
-		sb.WriteString(m.preview.View(m.width, contentHeight, m.browser.spinner.View()))
+		// The content popup overlays the three-pane area while open.
+		sb.WriteString(m.preview.View(m.width, ch, m.browser.spinner.View()))
 	} else {
-		// Sidebar
-		sideView := m.sidebar.View()
-		sideView = sidebarStyle.
-			Width(sidebarWidth).
-			Height(contentHeight).
-			Render(sideView)
-
-		// Browser
-		browseView := m.browser.View()
-		browseView = lipgloss.NewStyle().
-			Width(m.width - sidebarWidth - 2).
-			Height(contentHeight).
-			Render(browseView)
-
-		content := lipgloss.JoinHorizontal(lipgloss.Top, sideView, browseView)
-		sb.WriteString(content)
+		sb.WriteString(m.renderContent(ch))
 	}
 	sb.WriteString("\n")
 
-	// Status bar
-	var statusText string
-	switch {
-	case m.preview.active:
-		statusText = " ↑↓/jk: scroll  esc/q/p: close"
-	case m.browser.downloading:
-		statusText = " Downloading..."
-	case m.status != "":
-		statusText = " " + m.status
-	default:
-		statusText = " ↑↓/jk: nav  enter/l: open  esc/h: back  D: download  p: preview  y/Y: copy key/uri  u: presign  s/S: sort  tab: pane  q: quit"
+	if m.transferBarVisible() {
+		sb.WriteString(m.renderTransferBar())
+		sb.WriteString("\n")
 	}
-	status := statusBarStyle.Width(m.width).Render(statusText)
-	sb.WriteString(status)
+
+	sb.WriteString(m.renderStatusBar())
 
 	return sb.String()
+}
+
+// renderContent joins the sidebar, file list, and (when wide enough) the
+// metadata pane into the main content area.
+func (m Model) renderContent(ch int) string {
+	openCount := 0
+	if m.openBucketIdx >= 0 {
+		openCount = m.browser.fileCount()
+	}
+	sideView := sidebarStyle.Width(m.layout.sidebarW).Height(ch).MaxWidth(m.layout.sidebarW).
+		Render(m.sidebar.View(m.openBucketIdx, openCount))
+	listView := listStyle.Width(m.browser.width).Height(ch).MaxWidth(m.browser.width).
+		Render(m.browser.View())
+
+	if !m.layout.showPreview {
+		return lipgloss.JoinHorizontal(lipgloss.Top, sideView, listView)
+	}
+
+	item, ok := m.browser.selectedItem()
+	pane := renderMetaPane(item, ok, m.browser.loading, m.layout.previewW, ch)
+	previewView := metaPaneStyle.Width(m.layout.previewW).Height(ch).MaxWidth(m.layout.previewW).Render(pane)
+	return lipgloss.JoinHorizontal(lipgloss.Top, sideView, listView, previewView)
+}
+
+// renderTopBar draws the "anchr" pill, the breadcrumb, and the region cluster.
+func (m Model) renderTopBar() string {
+	p := pill("anchr")
+
+	right := ""
+	if m.openBucketIdx >= 0 && m.openBucketIdx < len(m.configs) {
+		if region := m.configs[m.openBucketIdx].Region; region != "" {
+			right = topDot.Render("● ") + topInfo.Render(region)
+		}
+	}
+
+	avail := m.width - lipgloss.Width(p) - lipgloss.Width(right) - 3 // 1 pad + 1 space + 1 pad
+	if avail < 1 {
+		avail = 1
+	}
+	crumb := m.renderBreadcrumb(avail)
+	if cw := lipgloss.Width(crumb); cw < avail {
+		crumb += darkBase.Render(strings.Repeat(" ", avail-cw))
+	}
+
+	bar := darkBase.Render(" ") + p + darkBase.Render(" ") + crumb + right + darkBase.Render(" ")
+	return fitBar(topBarStyle, bar, m.width)
+}
+
+// fitBar forces a single-line bar to exactly width cells: pad short bars with
+// the bar's background, truncate long ones. Using lipgloss Width() would
+// instead soft-wrap an overflowing bar onto a second line.
+func fitBar(style lipgloss.Style, bar string, width int) string {
+	if w := lipgloss.Width(bar); w < width {
+		return bar + style.Render(strings.Repeat(" ", width-w))
+	}
+	return style.MaxWidth(width).Render(bar)
+}
+
+// renderBreadcrumb builds the bucket/path breadcrumb, collapsing the middle and
+// truncating the tail to fit maxW. Truncation decisions are made on plain text
+// (rune widths) and styles are applied to the surviving pieces.
+func (m Model) renderBreadcrumb(maxW int) string {
+	if m.browser.bucket == "" {
+		return crumbHashed.Render(truncate("no bucket selected", maxW))
+	}
+
+	segs := []string{m.browser.bucket}
+	for _, p := range strings.Split(strings.TrimSuffix(m.browser.prefix, "/"), "/") {
+		if p != "" {
+			segs = append(segs, maybeEllipsize(p))
+		}
+	}
+
+	plainW := func(ss []string) int {
+		w := 0
+		for _, s := range ss {
+			w += lipgloss.Width(s)
+		}
+		if len(ss) > 1 {
+			w += (len(ss) - 1) * 3 // " / " separators
+		}
+		return w
+	}
+	styleSeg := func(i, n int, s string) string {
+		switch {
+		case i == 0:
+			return crumbBucket.Render(s)
+		case i == n-1:
+			return crumbCurrent.Render(s)
+		default:
+			return crumbFolder.Render(s)
+		}
+	}
+	sep := crumbSep.Render(" / ")
+
+	if plainW(segs) <= maxW {
+		parts := make([]string, len(segs))
+		for i, s := range segs {
+			parts[i] = styleSeg(i, len(segs), s)
+		}
+		return strings.Join(parts, sep)
+	}
+
+	// Collapse the middle to an ellipsis, keeping bucket + current.
+	last := segs[len(segs)-1]
+	prefix := crumbBucket.Render(segs[0]) + sep + crumbHashed.Render("…") + sep
+	budget := maxW - lipgloss.Width(segs[0]) - 3 - 1 - 3 // bucket + " / " + "…" + " / "
+	if budget < 1 {
+		return crumbBucket.Render(truncate(segs[0], maxW))
+	}
+	return prefix + crumbCurrent.Render(truncate(last, budget))
+}
+
+// maybeEllipsize shortens hash-like path segments (e.g. UUIDs) for the crumb.
+func maybeEllipsize(s string) string {
+	r := []rune(s)
+	if len(r) > 16 {
+		return string(r[:6]) + "…" + string(r[len(r)-4:])
+	}
+	return s
+}
+
+// renderStatusBar draws the key hints (left) and "item N of M · size" (right).
+func (m Model) renderStatusBar() string {
+	var left string
+	switch {
+	case m.preview.active:
+		left = statusLabel.Render(" ") +
+			keyChip(keyNav, "↑↓/jk", "scroll") + statusLabel.Render("  ") +
+			keyChip(keyNav, "esc/q/p", "close")
+	case m.status != "":
+		left = statusLabel.Render(" " + m.status)
+	default:
+		left = m.statusHints()
+	}
+
+	right := ""
+	if !m.preview.active && m.browser.bucket != "" && !m.browser.loading && m.browser.err == nil {
+		pos, total := m.browser.statusPosition()
+		right = statusRight.Render(
+			fmt.Sprintf("item %d of %d · %s ", pos, total, formatSize(m.browser.totalSize())),
+		)
+	}
+
+	// The right-side info is short and useful, so keep it and truncate the hints
+	// when the two would collide (leaving at least a 1-cell gap).
+	rightW := lipgloss.Width(right)
+	leftMax := m.width - rightW - 1
+	if leftMax < 0 {
+		leftMax = 0
+	}
+	left = lipgloss.NewStyle().MaxWidth(leftMax).Render(left)
+	gap := m.width - lipgloss.Width(left) - rightW
+	if gap < 0 {
+		gap = 0
+	}
+	bar := left + statusLabel.Render(strings.Repeat(" ", gap)) + right
+	return fitBar(statusBarStyle, bar, m.width)
+}
+
+func (m Model) statusHints() string {
+	chips := []string{
+		keyChip(keyNav, "↑↓", "nav"),
+		keyChip(keyNav, "⏎", "open"),
+		keyChip(keyNav, "esc", "back"),
+		keyChip(keyAction, "D", "download"),
+		keyChip(keyAction, "p", "preview"),
+		keyChip(keyYank, "y/Y", "copy"),
+		keyChip(keyYank, "u", "presign"),
+		keyChip(keyAction, "s/S", "sort"),
+		keyChip(keyNav, "tab", "pane"),
+		keyChip(keyQuit, "q", "quit"),
+	}
+	return statusLabel.Render(" ") + strings.Join(chips, statusLabel.Render("  "))
+}
+
+// renderTransferBar draws the indeterminate download bar: a block window that
+// sweeps across a track, advanced by the global spinner tick.
+func (m Model) renderTransferBar() string {
+	name := m.downloadingName
+	if name == "" {
+		name = "download"
+	}
+
+	const trackW, blockW = 16, 4
+	pos := 0
+	if steps := trackW - blockW + 1; steps > 0 {
+		pos = m.browser.tickCount % steps
+	}
+	var track strings.Builder
+	for i := 0; i < trackW; i++ {
+		if i >= pos && i < pos+blockW {
+			track.WriteString(transferBlock.Render("█"))
+		} else {
+			track.WriteString(transferTrack.Render("░"))
+		}
+	}
+
+	bar := transferBarStyle.Render(" ") + transferIcon.Render("⬇") + transferBarStyle.Render(" ") +
+		transferName.Render(truncate(name, 28)) + transferBarStyle.Render("  ") +
+		track.String() + transferBarStyle.Render("  ") + transferText.Render("Downloading…")
+	return fitBar(transferBarStyle, bar, m.width)
 }
