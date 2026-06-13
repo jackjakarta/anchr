@@ -2,12 +2,21 @@ package ui
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/jackjakarta/anchr/s3client"
+)
+
+type sortKey int
+
+const (
+	sortByName sortKey = iota
+	sortBySize
+	sortByModified
 )
 
 type browser struct {
@@ -24,6 +33,8 @@ type browser struct {
 	width       int
 	height      int
 	offset      int
+	sortBy      sortKey
+	sortReverse bool
 }
 
 func newBrowser() browser {
@@ -43,6 +54,7 @@ func (b *browser) setItems(result *s3client.ListResult) {
 	b.offset = 0
 	b.loading = false
 	b.err = nil
+	b.applySort()
 }
 
 func (b *browser) setError(err error) {
@@ -93,6 +105,61 @@ func (b *browser) selectedItem() (s3client.S3Item, bool) {
 		return s3client.S3Item{}, false
 	}
 	return b.items[idx], true
+}
+
+func (b *browser) applySort() {
+	sort.SliceStable(b.items, func(i, j int) bool {
+		a, c := b.items[i], b.items[j]
+		if a.IsDir != c.IsDir {
+			return a.IsDir // directories always first
+		}
+		var less bool
+		switch b.sortBy {
+		case sortBySize:
+			less = a.Size < c.Size
+		case sortByModified:
+			less = a.LastModified.Before(c.LastModified)
+		default: // sortByName
+			less = a.Name < c.Name
+		}
+		if b.sortReverse {
+			return !less
+		}
+		return less
+	})
+}
+
+func (b *browser) cycleSort() {
+	sel, _ := b.selectedItem()
+	b.sortBy = (b.sortBy + 1) % 3
+	b.applySort()
+	b.restoreCursor(sel.Key)
+}
+
+func (b *browser) toggleReverse() {
+	sel, _ := b.selectedItem()
+	b.sortReverse = !b.sortReverse
+	b.applySort()
+	b.restoreCursor(sel.Key)
+}
+
+func (b *browser) restoreCursor(key string) {
+	b.cursor = 0
+	b.offset = 0
+	if key == "" { // was on "../" (synthetic, empty Key)
+		return
+	}
+	base := 0
+	if b.canGoBack() {
+		base = 1 // account for the "../" entry at index 0
+	}
+	for i, it := range b.items {
+		if it.Key == key {
+			b.cursor = base + i
+			break
+		}
+	}
+	b.ensureVisible()
 }
 
 func (b *browser) enterFolder(prefix string) {
@@ -170,7 +237,20 @@ func (b browser) View() string {
 
 	// Column header
 	nameW := b.nameWidth()
-	header := fmt.Sprintf("  %-*s  %8s  %6s", nameW, "NAME", "SIZE", "DATE")
+	nameLbl, sizeLbl, dateLbl := "NAME", "SIZE", "DATE"
+	arrow := "▲"
+	if b.sortReverse {
+		arrow = "▼"
+	}
+	switch b.sortBy {
+	case sortBySize:
+		sizeLbl += " " + arrow
+	case sortByModified:
+		dateLbl += " " + arrow
+	default:
+		nameLbl += " " + arrow
+	}
+	header := fmt.Sprintf("  %-*s  %8s  %6s", nameW, nameLbl, sizeLbl, dateLbl)
 	sb.WriteString(lipglossRender(header, browserDimItem))
 	sb.WriteString("\n")
 

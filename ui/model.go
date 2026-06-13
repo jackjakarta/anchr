@@ -232,6 +232,18 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m.startPreview()
 		}
 		return m, nil
+
+	case key.Matches(msg, keys.Sort):
+		if m.focus == focusBrowser {
+			m.browser.cycleSort()
+		}
+		return m, nil
+
+	case key.Matches(msg, keys.SortReverse):
+		if m.focus == focusBrowser {
+			m.browser.toggleReverse()
+		}
+		return m, nil
 	}
 
 	return m, nil
@@ -458,7 +470,7 @@ func (m Model) View() string {
 	case m.status != "":
 		statusText = " " + m.status
 	default:
-		statusText = " ↑↓/jk: nav  enter/l: open  esc/h: back  D: download  p: preview  y/Y: copy key/uri  u: presign  tab: pane  q: quit"
+		statusText = " ↑↓/jk: nav  enter/l: open  esc/h: back  D: download  p: preview  y/Y: copy key/uri  u: presign  s/S: sort  tab: pane  q: quit"
 	}
 	status := statusBarStyle.Width(m.width).Render(statusText)
 	sb.WriteString(status)
