@@ -41,7 +41,11 @@ together in `main.go`:
   aws-sdk-go-v2 `s3.Client`. Credentials come from explicit `access_key`/`secret_key`
   if set, otherwise the default AWS credential chain. `endpoint` + `path_style`
   support S3-compatible stores. `ListObjects` uses `Delimiter: "/"` so listings
-  are one "directory" level at a time (CommonPrefixes become `IsDir` items).
+  are one "directory" level at a time (CommonPrefixes become `IsDir` items) and
+  pages through every result via the v2 paginator. Beyond listing it exposes
+  `DownloadObject` (streams to a local path), `PreviewObject` (ranged GET of the
+  first N bytes, also capped with `io.LimitReader` in case the store ignores the
+  `Range` header), and `PresignGetObject` (mints a presigned GET URL).
 - **`ui`** — the Bubble Tea program. `main.go` builds a `[]*s3client.Client`
   (parallel to `cfg.Buckets`), and the sidebar cursor indexes into both slices.
 
@@ -59,6 +63,30 @@ when done on `m.sidebar`/`m.browser` before returning `m`.
   folder pushes the current prefix, `goBack` pops it. A synthetic `"../"` item is
   prepended when `canGoBack()` is true — index math in `selectedItem`/`renderItem`
   must account for this offset.
+- The `browser` sorts in-memory by name/size/modified (`s` cycles the field, `S`
+  toggles direction); directories always sort first, and `restoreCursor` keeps the
+  selection pinned to the same key across re-sorts.
+
+### Object actions & keybindings
+
+`keys.go` is the single source of truth for bindings (a `bubbles/key` `keyMap`);
+the status-bar hints in `statusHints` are a separate hand-maintained list, so keep
+the two in sync. **Gotcha:** Shift-letter keys arrive as the uppercase rune, so
+`D`/`Y`/`S` are bound to `"D"`/`"Y"`/`"S"`, not a modifier.
+
+The browser-pane actions all follow the same shape in `model.go`: a `start*`
+method guards the selection (`!ok || item.IsDir || item.Name == "../"`), sets a
+transient `m.status`, and returns a `tea.Cmd` for the I/O. They are:
+
+- `D` — download (native macOS save panel, see below)
+- `p` — preview popup (async ranged fetch, 64 KB)
+- `y` / `Y` — copy the object key / `s3://bucket/key` URI to the clipboard
+- `u` — presigned GET URL (valid `presignExpiry`, 1h), copied to the clipboard
+- `s` / `S` — cycle sort field / toggle direction
+
+Clipboard writes go through `github.com/atotto/clipboard`. `m.status` is the
+transient feedback line in the status bar; **any keypress clears it** (the first
+line of `handleKey`), so it's for one-shot confirmations, not persistent state.
 
 ### V3 "Rich · Gruvbox" rendering
 
@@ -82,17 +110,21 @@ status bar. Layout-relevant files:
   (preview hides below 90 cols, sidebar narrows below 70). `fitBar` pads/truncates
   the full-width bars to exactly the terminal width (using `Width()` would
   soft-wrap an overflowing bar onto a second line).
-- The `preview` popup (`p`) still overlays the body for reading file content; the
-  metadata pane is separate and always visible (when wide enough).
+- **`preview.go`** — the `preview` popup (`p`) overlays the body for reading file
+  content. Opening it shows a spinner, then an async ranged fetch fills it in;
+  `isBinary` (invalid UTF-8 or a NUL byte) swaps text for a "preview unavailable"
+  note. The metadata pane is separate and always visible (when wide enough).
 
 ### Async and messages
 
-All I/O (listing, downloading, the save dialog) runs off the UI thread as
-`tea.Cmd`s that return one of the message types in `messages.go`
-(`ObjectsLoadedMsg`, `DownloadPathChosenMsg`, `FileDownloadedMsg`). The root
-`Update` switches on these. When adding new async work, define a `Msg` type,
-return a `tea.Cmd` closure that produces it, and handle it in `Update` — never
-block in `Update` itself.
+All I/O (listing, downloading, the save dialog, presign, preview fetch) runs off
+the UI thread as `tea.Cmd`s that return one of the message types in `messages.go`
+(`ObjectsLoadedMsg`, `DownloadPathChosenMsg`, `FileDownloadedMsg`,
+`PresignedURLGeneratedMsg`, `ObjectPreviewLoadedMsg`). The root `Update` switches
+on these. When adding new async work, define a `Msg` type, return a `tea.Cmd`
+closure that produces it, and handle it in `Update` — never block in `Update`
+itself. (`BucketSelectedMsg`/`NavigateMsg` are defined but currently inert — not
+dispatched anywhere.)
 
 ### macOS-only download
 

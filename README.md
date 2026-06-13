@@ -8,6 +8,9 @@ A fast terminal UI for browsing S3 and S3-compatible object storage.
 - Works with AWS S3 and S3-compatible stores (MinIO, Supabase, …)
 - Keyboard-driven two-pane navigation (bucket sidebar + object browser)
 - Download files straight from a bucket
+- Preview file contents without leaving the terminal
+- Copy object keys / `s3://` URIs and mint presigned download URLs
+- Sort listings by name, size, or last-modified
 - Optional prefix filtering to start inside a folder
 - Single static binary, no dependencies
 
@@ -25,6 +28,13 @@ environment variables:
 
 - `ANCHR_VERSION` — install a specific version (e.g. `v0.1.0`), default: latest
 - `ANCHR_INSTALL_DIR` — install to a custom directory
+
+Via homebrew:
+
+```sh
+brew tap jackjakarta/anchr
+brew install anchr
+```
 
 From source:
 
@@ -79,5 +89,9 @@ anchr --version        # print version
 | `enter`/`l` | open folder |
 | `esc`/`h` | go back |
 | `tab`, `←`/`→` | switch pane |
+| `p` | preview file |
 | `D` | download file |
+| `y` / `Y` | copy key / `s3://` URI |
+| `u` | copy presigned URL |
+| `s` / `S` | cycle sort field / reverse |
 | `q` | quit |
