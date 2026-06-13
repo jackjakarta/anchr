@@ -14,6 +14,7 @@ type keyMap struct {
 	CopyKey    key.Binding
 	CopyURI    key.Binding
 	PresignURL key.Binding
+	Preview    key.Binding
 	Quit       key.Binding
 }
 
@@ -61,6 +62,10 @@ var keys = keyMap{
 	PresignURL: key.NewBinding(
 		key.WithKeys("u"),
 		key.WithHelp("u", "presign url"),
+	),
+	Preview: key.NewBinding(
+		key.WithKeys("p"),
+		key.WithHelp("p", "preview"),
 	),
 	Quit: key.NewBinding(
 		key.WithKeys("q", "ctrl+c"),

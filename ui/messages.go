@@ -35,3 +35,10 @@ type PresignedURLGeneratedMsg struct {
 	URL string
 	Err error
 }
+
+// ObjectPreviewLoadedMsg is emitted after a ranged preview fetch completes.
+type ObjectPreviewLoadedMsg struct {
+	Content     []byte
+	ContentType string
+	Err         error
+}

@@ -2,6 +2,7 @@ package s3client
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"os"
 	"strings"
@@ -128,6 +129,28 @@ func (c *Client) DownloadObject(ctx context.Context, key, destPath string) error
 
 	_, err = io.Copy(f, out.Body)
 	return err
+}
+
+// PreviewObject fetches up to maxBytes of the object at key via a ranged GET.
+// It returns the raw bytes and the object's Content-Type. The read is also
+// capped with io.LimitReader so S3-compatible stores that ignore the Range
+// header still can't stream the whole object.
+func (c *Client) PreviewObject(ctx context.Context, key string, maxBytes int64) ([]byte, string, error) {
+	out, err := c.s3.GetObject(ctx, &s3.GetObjectInput{
+		Bucket: aws.String(c.bucket),
+		Key:    aws.String(key),
+		Range:  aws.String(fmt.Sprintf("bytes=0-%d", maxBytes-1)),
+	})
+	if err != nil {
+		return nil, "", err
+	}
+	defer out.Body.Close()
+
+	body, err := io.ReadAll(io.LimitReader(out.Body, maxBytes))
+	if err != nil {
+		return nil, "", err
+	}
+	return body, aws.ToString(out.ContentType), nil
 }
 
 // PresignGetObject returns a presigned GET URL for key, valid for expiry.

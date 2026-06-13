@@ -31,6 +31,7 @@ const (
 type Model struct {
 	sidebar sidebar
 	browser browser
+	preview preview
 	focus   focus
 	clients []*s3client.Client
 	configs []config.BucketConfig
@@ -111,6 +112,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.status = "Presigned URL copied to clipboard (valid 1h)"
 		return m, nil
 
+	case ObjectPreviewLoadedMsg:
+		if msg.Err != nil {
+			m.preview.setError(msg.Err)
+		} else {
+			m.preview.setContent(msg.Content, msg.ContentType)
+		}
+		return m, nil
+
 	case tea.KeyMsg:
 		return m.handleKey(msg)
 	}
@@ -121,6 +130,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// Any keypress dismisses a lingering status message.
 	m.status = ""
+
+	// While the preview popup is open it captures all keys so they don't leak
+	// to the browser underneath.
+	if m.preview.active {
+		switch {
+		case msg.String() == "ctrl+c":
+			return m, tea.Quit
+		case key.Matches(msg, keys.Up):
+			m.preview.scrollUp()
+		case key.Matches(msg, keys.Down):
+			m.preview.scrollDown(m.contentHeight())
+		case key.Matches(msg, keys.Back), key.Matches(msg, keys.Preview), key.Matches(msg, keys.Quit):
+			m.preview.close()
+		}
+		return m, nil
+	}
 
 	switch {
 	case key.Matches(msg, keys.Quit):
@@ -199,6 +224,12 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, keys.PresignURL):
 		if m.focus == focusBrowser {
 			return m.startPresign()
+		}
+		return m, nil
+
+	case key.Matches(msg, keys.Preview):
+		if m.focus == focusBrowser {
+			return m.startPreview()
 		}
 		return m, nil
 	}
@@ -343,12 +374,34 @@ func (m Model) presignURL(clientIdx int, key string) tea.Cmd {
 	}
 }
 
-func (m *Model) updateLayout() {
-	// Reserve 2 rows for title bar and status bar
-	contentHeight := m.height - 2
-	if contentHeight < 1 {
-		contentHeight = 1
+func (m Model) startPreview() (tea.Model, tea.Cmd) {
+	item, ok := m.browser.selectedItem()
+	if !ok || item.IsDir || item.Name == "../" {
+		return m, nil
 	}
+	m.preview.open(item.Name)
+	return m, m.loadPreview(m.sidebar.cursor, item.Key)
+}
+
+func (m Model) loadPreview(clientIdx int, key string) tea.Cmd {
+	client := m.clients[clientIdx]
+	return func() tea.Msg {
+		content, contentType, err := client.PreviewObject(context.Background(), key, previewMaxBytes)
+		return ObjectPreviewLoadedMsg{Content: content, ContentType: contentType, Err: err}
+	}
+}
+
+// contentHeight is the screen height minus the title and status bars.
+func (m Model) contentHeight() int {
+	h := m.height - 2
+	if h < 1 {
+		h = 1
+	}
+	return h
+}
+
+func (m *Model) updateLayout() {
+	contentHeight := m.contentHeight()
 	m.sidebar.height = contentHeight
 	m.browser.height = contentHeight
 	m.browser.width = m.width - sidebarWidth - 1 // -1 for border
@@ -370,38 +423,42 @@ func (m Model) View() string {
 	sb.WriteString("\n")
 
 	// Content area
-	contentHeight := m.height - 2
-	if contentHeight < 1 {
-		contentHeight = 1
+	contentHeight := m.contentHeight()
+
+	if m.preview.active {
+		// The preview popup replaces the two-pane content while open.
+		sb.WriteString(m.preview.View(m.width, contentHeight, m.browser.spinner.View()))
+	} else {
+		// Sidebar
+		sideView := m.sidebar.View()
+		sideView = sidebarStyle.
+			Width(sidebarWidth).
+			Height(contentHeight).
+			Render(sideView)
+
+		// Browser
+		browseView := m.browser.View()
+		browseView = lipgloss.NewStyle().
+			Width(m.width - sidebarWidth - 2).
+			Height(contentHeight).
+			Render(browseView)
+
+		content := lipgloss.JoinHorizontal(lipgloss.Top, sideView, browseView)
+		sb.WriteString(content)
 	}
-
-	// Sidebar
-	sideView := m.sidebar.View()
-	sideView = sidebarStyle.
-		Width(sidebarWidth).
-		Height(contentHeight).
-		Render(sideView)
-
-	// Browser
-	browseView := m.browser.View()
-	browseView = lipgloss.NewStyle().
-		Width(m.width - sidebarWidth - 2).
-		Height(contentHeight).
-		Render(browseView)
-
-	content := lipgloss.JoinHorizontal(lipgloss.Top, sideView, browseView)
-	sb.WriteString(content)
 	sb.WriteString("\n")
 
 	// Status bar
 	var statusText string
 	switch {
+	case m.preview.active:
+		statusText = " ↑↓/jk: scroll  esc/q/p: close"
 	case m.browser.downloading:
 		statusText = " Downloading..."
 	case m.status != "":
 		statusText = " " + m.status
 	default:
-		statusText = " ↑↓/jk: nav  enter/l: open  esc/h: back  D: download  y/Y: copy key/uri  u: presign  tab: pane  q: quit"
+		statusText = " ↑↓/jk: nav  enter/l: open  esc/h: back  D: download  p: preview  y/Y: copy key/uri  u: presign  tab: pane  q: quit"
 	}
 	status := statusBarStyle.Width(m.width).Render(statusText)
 	sb.WriteString(status)
