@@ -135,7 +135,10 @@ func (p preview) View(width, height int, spinnerView string) string {
 	}
 
 	box := previewBox.Width(boxW).Height(boxH).Render(b.String())
-	return lipgloss.Place(width, height, lipgloss.Center, lipgloss.Center, box)
+	return lipgloss.Place(
+		width, height, lipgloss.Center, lipgloss.Center, box,
+		lipgloss.WithWhitespaceBackground(cAppBg),
+	)
 }
 
 // previewBoxWidth/Height size the popup relative to the screen, clamped so it

@@ -19,6 +19,19 @@ const (
 	sortByModified
 )
 
+// File-list column widths (cells). Fixed columns plus a flexible NAME column.
+// rows and the column header share these so everything aligns.
+const (
+	colAccent = 1  // left accent bar (▌ on cursor, else space)
+	colIcon   = 2  // type icon + trailing gap
+	colKind   = 6  // KIND badge (centered; max label 4 + Padding(0,1))
+	colSize   = 10 // SIZE (right-aligned)
+	colDate   = 6  // DATE (right-aligned, "Jan _2")
+	colGaps   = 3  // single-cell gaps before KIND, SIZE, DATE
+	// total non-name overhead used by nameWidth()
+	colFixed = colAccent + colIcon + colKind + colSize + colDate + colGaps
+)
+
 type browser struct {
 	items       []s3client.S3Item
 	cursor      int
@@ -35,6 +48,7 @@ type browser struct {
 	offset      int
 	sortBy      sortKey
 	sortReverse bool
+	tickCount   int // advanced on every spinner tick; animates the transfer bar
 }
 
 func newBrowser() browser {
@@ -88,6 +102,46 @@ func (b *browser) itemCount() int {
 
 func (b *browser) canGoBack() bool {
 	return b.prefix != "" || len(b.prefixStack) > 0
+}
+
+// fileCount is the number of non-directory objects in the current listing.
+// Backs the sidebar count badge and the status bar's item total.
+func (b browser) fileCount() int {
+	n := 0
+	for _, it := range b.items {
+		if !it.IsDir {
+			n++
+		}
+	}
+	return n
+}
+
+// totalSize sums the byte sizes of the file objects in the current listing.
+func (b browser) totalSize() int64 {
+	var sum int64
+	for _, it := range b.items {
+		if !it.IsDir {
+			sum += it.Size
+		}
+	}
+	return sum
+}
+
+// statusPosition reports the 1-based index of the selected item within items
+// (the synthetic "../" yields 0) and the total row count. Used by the status
+// bar's "item N of M".
+func (b browser) statusPosition() (pos, total int) {
+	total = len(b.items)
+	sel, ok := b.selectedItem()
+	if !ok || sel.Name == "../" {
+		return 0, total
+	}
+	for i, it := range b.items {
+		if it.Key == sel.Key {
+			return i + 1, total
+		}
+	}
+	return 0, total
 }
 
 func (b *browser) selectedItem() (s3client.S3Item, bool) {
@@ -213,45 +267,19 @@ func (b browser) View() string {
 
 	var sb strings.Builder
 
-	// Path header
-	path := b.bucket
-	if b.prefix != "" {
-		path += " / " + b.prefix
-	}
-	if len(path) > b.width-2 {
-		path = "..." + path[len(path)-b.width+5:]
-	}
-	sb.WriteString(browserHeader.Render(path))
-	sb.WriteString("\n")
-
 	if b.loading {
-		sb.WriteString(fmt.Sprintf("\n  %s Loading...", b.spinner.View()))
+		sb.WriteString(fmt.Sprintf("  %s Loading…", b.spinner.View()))
 		return sb.String()
 	}
 
 	if b.err != nil {
-		sb.WriteString("\n")
 		sb.WriteString(errorStyle.Render(fmt.Sprintf("  Error: %s", b.err)))
 		return sb.String()
 	}
 
 	// Column header
 	nameW := b.nameWidth()
-	nameLbl, sizeLbl, dateLbl := "NAME", "SIZE", "DATE"
-	arrow := "▲"
-	if b.sortReverse {
-		arrow = "▼"
-	}
-	switch b.sortBy {
-	case sortBySize:
-		sizeLbl += " " + arrow
-	case sortByModified:
-		dateLbl += " " + arrow
-	default:
-		nameLbl += " " + arrow
-	}
-	header := fmt.Sprintf("  %-*s  %8s  %6s", nameW, nameLbl, sizeLbl, dateLbl)
-	sb.WriteString(lipglossRender(header, browserDimItem))
+	sb.WriteString(b.renderHeader(nameW))
 	sb.WriteString("\n")
 
 	if b.itemCount() == 0 {
@@ -259,8 +287,7 @@ func (b browser) View() string {
 		return sb.String()
 	}
 
-	// Items
-	headerRows := 2 // path + column header
+	headerRows := 1 // column header
 	visible := b.height - headerRows
 	if visible < 1 {
 		visible = 1
@@ -271,8 +298,7 @@ func (b browser) View() string {
 	}
 
 	for i := b.offset; i < end; i++ {
-		line := b.renderItem(i, nameW)
-		sb.WriteString(line)
+		sb.WriteString(b.renderItem(i, nameW))
 		if i < end-1 {
 			sb.WriteString("\n")
 		}
@@ -281,10 +307,63 @@ func (b browser) View() string {
 	return sb.String()
 }
 
+// renderHeader draws the column header row: blank icon column, NAME (with the
+// active sort arrow), KIND, SIZE, DATE — matching the row column widths.
+func (b browser) renderHeader(nameW int) string {
+	arrow := "▲"
+	if b.sortReverse {
+		arrow = "▼"
+	}
+	nameArrow, sizeArrow, dateArrow := "", "", ""
+	switch b.sortBy {
+	case sortBySize:
+		sizeArrow = arrow
+	case sortByModified:
+		dateArrow = arrow
+	default:
+		nameArrow = arrow
+	}
+
+	var sb strings.Builder
+	sb.WriteString(colHeader.Render(strings.Repeat(" ", colAccent+colIcon))) // accent + icon cols
+	sb.WriteString(headerField(nameArrow, nameW, false, "NAME"))
+	sb.WriteString(colHeader.Render(" "))
+	sb.WriteString(colHeader.Width(colKind).Align(lipgloss.Center).Render("KIND"))
+	sb.WriteString(colHeader.Render(" "))
+	sb.WriteString(headerField(sizeArrow, colSize, true, "SIZE"))
+	sb.WriteString(colHeader.Render(" "))
+	sb.WriteString(headerField(dateArrow, colDate, true, "DATE"))
+	return sb.String()
+}
+
+// headerField renders one header label in width w, left- or right-aligned,
+// with the sort arrow (if any) colored yellow and the rest dim.
+func headerField(arrow string, w int, right bool, label string) string {
+	text := label
+	if arrow != "" {
+		text = label + " " + arrow
+	}
+	pad := w - lipgloss.Width(text)
+	if pad < 0 {
+		pad = 0
+	}
+	var sb strings.Builder
+	if right {
+		sb.WriteString(colHeader.Render(strings.Repeat(" ", pad)))
+	}
+	sb.WriteString(colHeader.Render(label))
+	if arrow != "" {
+		sb.WriteString(colHeader.Render(" "))
+		sb.WriteString(sortArrow.Render(arrow))
+	}
+	if !right {
+		sb.WriteString(colHeader.Render(strings.Repeat(" ", pad)))
+	}
+	return sb.String()
+}
+
 func (b browser) renderItem(index, nameW int) string {
 	isBack := false
-	var item s3client.S3Item
-
 	adjustedIndex := index
 	if b.canGoBack() {
 		if index == 0 {
@@ -294,6 +373,7 @@ func (b browser) renderItem(index, nameW int) string {
 		}
 	}
 
+	var item s3client.S3Item
 	if isBack {
 		item = s3client.S3Item{Name: "../", IsDir: true}
 	} else {
@@ -301,20 +381,27 @@ func (b browser) renderItem(index, nameW int) string {
 	}
 
 	isCursor := index == b.cursor
+	k := kindFor(item)
 
-	name := item.Name
-	if len(name) > nameW {
-		name = name[:nameW-3] + "..."
+	// Resolve the per-row palette. Non-cursor rows sit on the app bg; the cursor
+	// row sits on the elevated bg with a yellow (focused) or gray (unfocused)
+	// accent. Every cell style derives from base so it carries the row bg.
+	base := rowBlank
+	accent := cYellow
+	if isCursor {
+		base = elevBase
+		if !b.focused {
+			accent = cFgMut
+		}
 	}
 
+	// Column contents -------------------------------------------------
+	dash := item.IsDir || isBack
 	var sizeStr, dateStr string
 	if item.IsDir {
-		sizeStr = "-"
-		dateStr = ""
-		if !isBack {
-			if !item.LastModified.IsZero() {
-				dateStr = formatDate(item.LastModified)
-			}
+		sizeStr = "—"
+		if !isBack && !item.LastModified.IsZero() {
+			dateStr = formatDate(item.LastModified)
 		}
 	} else {
 		sizeStr = formatSize(item.Size)
@@ -323,44 +410,80 @@ func (b browser) renderItem(index, nameW int) string {
 		}
 	}
 
-	line := fmt.Sprintf("  %-*s  %8s  %6s", nameW, name, sizeStr, dateStr)
-
-	if item.IsDir {
-		if isCursor {
-			if b.focused {
-				return browserActiveItem.Render(line)
-			}
-			return browserDimActiveItem.Render(line)
-		}
-		if b.focused {
-			return dirStyle.Render(line)
-		}
-		return dirDimStyle.Render(line)
+	name := truncate(item.Name, nameW)
+	icon := k.Icon
+	if isBack {
+		icon = "↰"
 	}
 
+	// Per-cell styles (all carry the row bg) --------------------------
+	iconStyle := base.Foreground(k.Color)
+	nameStyle := base.Foreground(cFg)
+	sizeStyle := base.Foreground(cFgMut)
+	dateStyle := base.Foreground(cFgMut)
+	dashStyle := base.Foreground(cBordDim)
+	var badgeStr string
+
+	switch {
+	case isCursor:
+		iconStyle = base.Foreground(accent)
+		nameStyle = base.Foreground(accent).Bold(b.focused)
+		sizeStyle = base.Foreground(accent)
+		dateStyle = base.Foreground(accent).Faint(true)
+		if !isBack {
+			badgeStr = badge(k.Label, cOnAcc, accent) // filled with the accent
+		}
+	case isBack:
+		iconStyle = base.Foreground(cFgDim)
+		nameStyle = base.Foreground(cFgDim)
+	case item.IsDir:
+		nameStyle = base.Foreground(cAqua)
+		badgeStr = badge(k.Label, k.Color, cElevBg)
+	default:
+		badgeStr = badge(k.Label, k.Color, cElevBg)
+	}
+
+	// Assemble fixed-width, bg-styled fields (no bare spacers) ---------
+	var sb strings.Builder
 	if isCursor {
-		if b.focused {
-			return browserActiveItem.Render(line)
-		}
-		return browserDimActiveItem.Render(line)
+		sb.WriteString(base.Foreground(accent).Render(accentGlyph))
+	} else {
+		sb.WriteString(base.Render(" "))
 	}
-	if b.focused {
-		return browserItem.Render(line)
+	sb.WriteString(iconStyle.Width(colIcon).Render(icon))
+	sb.WriteString(nameStyle.Width(nameW).Render(name))
+	sb.WriteString(base.Render(" "))
+	sb.WriteString(kindCell(base, badgeStr))
+	sb.WriteString(base.Render(" "))
+	if dash {
+		sb.WriteString(dashStyle.Width(colSize).Align(lipgloss.Right).Render(sizeStr))
+	} else {
+		sb.WriteString(sizeStyle.Width(colSize).Align(lipgloss.Right).Render(sizeStr))
 	}
-	return browserDimItem.Render(line)
+	sb.WriteString(base.Render(" "))
+	sb.WriteString(dateStyle.Width(colDate).Align(lipgloss.Right).Render(dateStr))
+
+	return sb.String()
+}
+
+// kindCell centers a (possibly empty) badge within the KIND column, padding the
+// remainder with the row background.
+func kindCell(base lipgloss.Style, badgeStr string) string {
+	bw := lipgloss.Width(badgeStr)
+	if bw > colKind {
+		bw = colKind
+	}
+	lp := (colKind - bw) / 2
+	rp := colKind - bw - lp
+	return base.Render(strings.Repeat(" ", lp)) + badgeStr + base.Render(strings.Repeat(" ", rp))
 }
 
 func (b browser) nameWidth() int {
-	// total width minus padding/columns: "  " + "  " + 8 + "  " + 6
-	w := b.width - 22
-	if w < 10 {
-		w = 10
+	w := b.width - colFixed
+	if w < 6 {
+		w = 6
 	}
 	return w
-}
-
-func lipglossRender(s string, style lipgloss.Style) string {
-	return style.Render(s)
 }
 
 func formatSize(bytes int64) string {

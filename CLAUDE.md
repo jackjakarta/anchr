@@ -13,12 +13,16 @@ on [Bubble Tea](https://github.com/charmbracelet/bubbletea).
 ```sh
 go build -o anchr            # local dev build
 go run . --config <path>     # run from source
-go vet ./...                 # vet (no test suite exists yet)
+go vet ./...                 # vet
+go test ./...                # unit tests live in the ui package
 ./build.sh <version>         # cross-compile release tarballs for linux/darwin × amd64/arm64
 ```
 
-There are no tests. Code is gofmt'd on save (`.vscode/settings.json` uses the
-`golang.go` formatter); run `gofmt -w` before committing.
+Tests live in `ui/*_test.go` (pure-function table tests plus `view_test.go`,
+which renders `Model.View()` at several sizes and asserts the grid invariants —
+exactly `height` lines, each exactly `width` cells). Code is gofmt'd on save
+(`.vscode/settings.json` uses the `golang.go` formatter); run `gofmt -w` before
+committing. CI (`.github/workflows/static-checks.yml`) runs gofmt/vet/build/test.
 
 To run the TUI you need a config at `~/.config/anchr/config.yaml` (or pass
 `--config`). `config.example.yaml` is a template; `real-config.yaml` is
@@ -43,18 +47,43 @@ together in `main.go`:
 
 ### UI model structure
 
-`ui.Model` (`model.go`) is the single root `tea.Model`. It owns two sub-views,
-`sidebar` and `browser`, which are **plain structs with methods, not nested
-`tea.Model`s** — the root `Update`/`View` calls their methods directly rather
-than delegating via `Update(msg)`. Pointer receivers mutate cursor/scroll state;
-the root holds them by value, so mutations only stick when done on `m.sidebar`/
-`m.browser` before returning `m`.
+`ui.Model` (`model.go`) is the single root `tea.Model`. It owns two focusable
+sub-views, `sidebar` and `browser`, plus a `preview` popup — all **plain structs
+with methods, not nested `tea.Model`s** — the root `Update`/`View` calls their
+methods directly rather than delegating via `Update(msg)`. Pointer receivers
+mutate cursor/scroll state; the root holds them by value, so mutations only stick
+when done on `m.sidebar`/`m.browser` before returning `m`.
 
 - `focus` (sidebar vs. browser) decides which pane key events drive.
 - The `browser` tracks navigation with `prefix` + `prefixStack`; entering a
   folder pushes the current prefix, `goBack` pops it. A synthetic `"../"` item is
   prepended when `canGoBack()` is true — index math in `selectedItem`/`renderItem`
   must account for this offset.
+
+### V3 "Rich · Gruvbox" rendering
+
+The UI is the V3 design: a top bar (`anchr` pill + breadcrumb + region), a
+three-column body (sidebar | file list | always-on metadata pane), an
+indeterminate transfer bar shown only while downloading, and a colored-key
+status bar. Layout-relevant files:
+
+- **`styles.go`** — the Gruvbox palette (`c*` color vars) and every `lipgloss`
+  style, grouped by region. Each pane paints its own background, so leaf styles
+  derive from a region *base* (`appBase`/`panelBase`/`darkBase`/`elevBase`) to
+  carry the bg — a wrapper background does **not** bleed through inner styled
+  segments (each emits its own SGR reset). Rows are assembled from bg-styled
+  fixed-width fields (no bare spacers). **Never use `Inline(true)` for badges** —
+  in lipgloss v1.1.0 it strips `Padding`.
+- **`kinds.go`** — `kindFor(item)` → icon/badge-color/label/mime, the single
+  source of truth for the file-list row *and* the preview pane's "Type".
+- **`metapane.go`** — `renderMetaPane`, the stateless right-hand pane rendered
+  from the current selection (`ETag`/`StorageClass` come from the listing).
+- **`model.go`** — `updateLayout()` resolves responsive widths into `m.layout`
+  (preview hides below 90 cols, sidebar narrows below 70). `fitBar` pads/truncates
+  the full-width bars to exactly the terminal width (using `Width()` would
+  soft-wrap an overflowing bar onto a second line).
+- The `preview` popup (`p`) still overlays the body for reading file content; the
+  metadata pane is separate and always visible (when wide enough).
 
 ### Async and messages
 
