@@ -18,6 +18,7 @@ type keyMap struct {
 	Filter      key.Binding
 	Sort        key.Binding
 	SortReverse key.Binding
+	CancelDL    key.Binding
 	Quit        key.Binding
 }
 
@@ -81,6 +82,10 @@ var keys = keyMap{
 	SortReverse: key.NewBinding(
 		key.WithKeys("S"), // Shift+s arrives as uppercase "S"
 		key.WithHelp("S", "reverse"),
+	),
+	CancelDL: key.NewBinding(
+		key.WithKeys("ctrl+x"),
+		key.WithHelp("^x", "cancel download"),
 	),
 	Quit: key.NewBinding(
 		key.WithKeys("q", "ctrl+c"),

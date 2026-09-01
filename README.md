@@ -9,7 +9,7 @@ A fast terminal UI for browsing S3 and S3-compatible object storage.
 - Browse multiple buckets from a single config
 - Works with AWS S3 and S3-compatible stores (MinIO, Supabase, …)
 - Keyboard-driven two-pane navigation (bucket sidebar + object browser)
-- Download files straight from a bucket
+- Download files with a save-path prompt, live progress, and `ctrl+x` to cancel
 - Preview file contents without leaving the terminal
 - Copy object keys / `s3://` URIs and mint presigned download URLs
 - Sort listings by name, size, or last-modified
@@ -94,7 +94,8 @@ anchr --version        # print version
 | `tab`, `←`/`→` | switch pane |
 | `/` | filter listing (`enter` keeps it, `esc` clears) |
 | `p` | preview file |
-| `D` | download file |
+| `D` | download file (prompt: `enter` save, `esc` cancel) |
+| `ctrl+x` | cancel the download in progress |
 | `y` / `Y` | copy key / `s3://` URI |
 | `u` | copy presigned URL |
 | `s` / `S` | cycle sort field / reverse |

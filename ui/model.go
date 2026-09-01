@@ -3,7 +3,6 @@ package ui
 import (
 	"context"
 	"fmt"
-	"os/exec"
 	"path"
 	"strings"
 	"time"
@@ -37,18 +36,27 @@ type layoutState struct {
 }
 
 type Model struct {
-	sidebar         sidebar
-	browser         browser
-	preview         preview
-	focus           focus
-	clients         []*s3client.Client
-	configs         []config.BucketConfig
-	width           int
-	height          int
-	status          string
-	layout          layoutState
-	openBucketIdx   int    // index of the bucket whose objects are loaded (-1 = none)
-	downloadingName string // base name of the in-flight download, for the transfer bar
+	sidebar       sidebar
+	browser       browser
+	preview       preview
+	savePrompt    savePrompt
+	focus         focus
+	clients       []*s3client.Client
+	configs       []config.BucketConfig
+	width         int
+	height        int
+	status        string
+	layout        layoutState
+	openBucketIdx int // index of the bucket whose objects are loaded (-1 = none)
+
+	// In-flight download. transfer is nil when idle; the dl* fields are the
+	// latest sample from DownloadProgressMsg, kept here so View stays a pure
+	// function of the model (no time.Since at render time).
+	transfer  *transfer
+	dlWritten int64
+	dlTotal   int64
+	dlRate    float64 // bytes/sec, averaged over the transfer so far
+	dlETA     time.Duration
 }
 
 func NewModel(cfg *config.Config, clients []*s3client.Client) Model {
@@ -60,6 +68,7 @@ func NewModel(cfg *config.Config, clients []*s3client.Client) Model {
 	return Model{
 		sidebar:       newSidebar(names),
 		browser:       newBrowser(),
+		savePrompt:    newSavePrompt(),
 		focus:         focusSidebar,
 		clients:       clients,
 		configs:       cfg.Buckets,
@@ -93,26 +102,31 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
-	case DownloadPathChosenMsg:
-		if msg.Cancelled {
-			return m, nil
+	case DownloadProgressMsg:
+		if m.transfer == nil {
+			return m, nil // a sample that outlived its download
 		}
-		if msg.Err != nil {
-			m.status = fmt.Sprintf("Download failed: %s", msg.Err)
-			return m, nil
+		m.dlWritten, m.dlTotal = msg.Written, msg.Total
+		if elapsed := time.Since(m.transfer.started).Seconds(); elapsed > 0 && msg.Written > 0 {
+			m.dlRate = float64(msg.Written) / elapsed
+			if msg.Total > msg.Written && m.dlRate > 0 {
+				m.dlETA = time.Duration(float64(msg.Total-msg.Written) / m.dlRate * float64(time.Second))
+			} else {
+				m.dlETA = 0
+			}
 		}
-		m.browser.downloading = true
-		m.downloadingName = path.Base(msg.Key)
-		m.updateLayout() // the transfer bar steals a content row
-		return m, m.downloadFile(msg.ClientIdx, msg.Key, msg.DestPath)
+		return m, pollProgress(m.transfer)
 
 	case FileDownloadedMsg:
-		m.browser.downloading = false
-		m.downloadingName = ""
+		m.transfer = nil
+		m.dlWritten, m.dlTotal, m.dlRate, m.dlETA = 0, 0, 0, 0
 		m.updateLayout() // give the content row back
-		if msg.Err != nil {
+		switch {
+		case msg.Cancelled:
+			m.status = "Download cancelled"
+		case msg.Err != nil:
 			m.status = fmt.Sprintf("Download failed: %s", msg.Err)
-		} else {
+		default:
 			m.status = fmt.Sprintf("Downloaded to %s", msg.DestPath)
 		}
 		return m, nil
@@ -164,6 +178,27 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	// The save prompt captures every key the same way, so a path can contain
+	// s/y/D/q without firing the browser actions underneath.
+	if m.savePrompt.active {
+		switch msg.Type {
+		case tea.KeyCtrlC:
+			return m, tea.Quit
+		case tea.KeyEsc:
+			m.savePrompt.close()
+			return m, nil
+		case tea.KeyEnter:
+			dest, ok := m.savePrompt.resolve()
+			if !ok {
+				return m, nil // error or overwrite confirmation; stay open
+			}
+			clientIdx, key := m.savePrompt.clientIdx, m.savePrompt.key
+			m.savePrompt.close()
+			return m.startTransfer(clientIdx, key, dest)
+		}
+		return m, m.savePrompt.update(msg)
+	}
+
 	// While the `/` input has focus it captures every key, so nothing leaks to
 	// the browser actions underneath — s, y, D, q and h/l would all fire
 	// mid-word otherwise.
@@ -194,7 +229,18 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	switch {
+	case key.Matches(msg, keys.CancelDL):
+		if m.transfer != nil {
+			m.transfer.abort()
+		}
+		return m, nil
+
 	case key.Matches(msg, keys.Quit):
+		if m.transfer != nil {
+			// Give DownloadObject's cleanup a chance to remove the .part file
+			// before the process goes away.
+			m.transfer.abort()
+		}
 		return m, tea.Quit
 
 	case key.Matches(msg, keys.Tab):
@@ -367,43 +413,39 @@ func (m Model) loadObjects(clientIdx int, prefix string) tea.Cmd {
 	}
 }
 
+// startDownload opens the save-path prompt for the selected object. The prompt
+// is in-TUI on every platform — there is no native save panel any more.
 func (m Model) startDownload() (tea.Model, tea.Cmd) {
 	item, ok := m.browser.selectedItem()
 	if !ok || item.IsDir || item.Name == "../" {
 		return m, nil
 	}
-	m.status = ""
-	return m, chooseDownloadDest(m.sidebar.cursor, item.Key, path.Base(item.Key))
-}
-
-// chooseDownloadDest opens the native macOS save panel via osascript and
-// reports the chosen destination path (or a user cancellation).
-func chooseDownloadDest(clientIdx int, key, defaultName string) tea.Cmd {
-	return func() tea.Msg {
-		script := fmt.Sprintf(
-			`POSIX path of (choose file name with prompt "Save file as:" `+
-				`default name %q default location (path to downloads folder))`,
-			defaultName,
-		)
-		out, err := exec.Command("osascript", "-e", script).Output()
-		if err != nil {
-			if ee, ok := err.(*exec.ExitError); ok && strings.Contains(string(ee.Stderr), "-128") {
-				return DownloadPathChosenMsg{Cancelled: true}
-			}
-			return DownloadPathChosenMsg{Err: err}
-		}
-		dest := strings.TrimRight(string(out), "\r\n")
-		if dest == "" {
-			return DownloadPathChosenMsg{Cancelled: true}
-		}
-		return DownloadPathChosenMsg{ClientIdx: clientIdx, Key: key, DestPath: dest}
+	if m.transfer != nil {
+		m.status = "A download is already in progress"
+		return m, nil
 	}
+	m.status = ""
+	m.savePrompt.open(m.sidebar.cursor, item.Key, path.Base(item.Key))
+	return m, nil
 }
 
-func (m Model) downloadFile(clientIdx int, key, destPath string) tea.Cmd {
+// startTransfer kicks off the download itself plus the progress poll.
+func (m Model) startTransfer(clientIdx int, key, destPath string) (tea.Model, tea.Cmd) {
+	ctx, cancel := context.WithCancel(context.Background())
+	t := newTransfer(path.Base(key), cancel)
+	m.transfer = t
+	m.dlWritten, m.dlTotal, m.dlRate, m.dlETA = 0, 0, 0, 0
+	m.updateLayout() // the transfer bar steals a content row
+	return m, tea.Batch(m.downloadFile(ctx, clientIdx, key, destPath, t), pollProgress(t))
+}
+
+func (m Model) downloadFile(ctx context.Context, clientIdx int, key, destPath string, t *transfer) tea.Cmd {
 	client := m.clients[clientIdx]
 	return func() tea.Msg {
-		err := client.DownloadObject(context.Background(), key, destPath)
+		err := client.DownloadObject(ctx, key, destPath, t.note)
+		if err != nil && t.cancelled.Load() {
+			return FileDownloadedMsg{DestPath: destPath, Cancelled: true}
+		}
 		return FileDownloadedMsg{DestPath: destPath, Err: err}
 	}
 }
@@ -462,10 +504,10 @@ func (m Model) loadPreview(clientIdx int, key string) tea.Cmd {
 	}
 }
 
-// transferBarVisible reports whether the indeterminate transfer bar row is
-// currently shown (a download is in flight).
+// transferBarVisible reports whether the transfer bar row is currently shown
+// (a download is in flight).
 func (m Model) transferBarVisible() bool {
-	return m.browser.downloading
+	return m.transfer != nil
 }
 
 // contentHeight is the screen height minus the top bar, status bar, and (when a
@@ -524,10 +566,14 @@ func (m Model) View() string {
 	sb.WriteString(m.renderTopBar())
 	sb.WriteString("\n")
 
-	if m.preview.active {
+	switch {
+	case m.savePrompt.active:
+		// The save prompt overlays the three-pane area, like the preview popup.
+		sb.WriteString(m.savePrompt.View(m.width, ch))
+	case m.preview.active:
 		// The content popup overlays the three-pane area while open.
 		sb.WriteString(m.preview.View(m.width, ch, m.browser.spinner.View()))
-	} else {
+	default:
 		sb.WriteString(m.renderContent(ch))
 	}
 	sb.WriteString("\n")
@@ -670,6 +716,11 @@ func (m Model) renderStatusBar() string {
 		left = m.renderFilterInput()
 	case m.browser.filter != "":
 		left = m.renderFilterChip() + statusLabel.Render(" ") + m.statusHints()
+	case m.savePrompt.active:
+		left = statusLabel.Render(" ") +
+			keyChip(keyNav, "⏎", "save") + statusLabel.Render("  ") +
+			keyChip(keyNav, "esc", "cancel") + statusLabel.Render("  ") +
+			keyChip(keyAction, "^u", "clear")
 	case m.preview.active:
 		left = statusLabel.Render(" ") +
 			keyChip(keyNav, "↑↓/jk", "scroll") + statusLabel.Render("  ") +
@@ -681,7 +732,8 @@ func (m Model) renderStatusBar() string {
 	}
 
 	right := ""
-	if !m.preview.active && m.browser.bucket != "" && !m.browser.loading && m.browser.err == nil {
+	if !m.preview.active && !m.savePrompt.active &&
+		m.browser.bucket != "" && !m.browser.loading && m.browser.err == nil {
 		pos, total := m.browser.statusPosition()
 		right = statusRight.Render(
 			fmt.Sprintf("item %d of %d · %s ", pos, total, formatSize(m.browser.totalSize())),
@@ -738,32 +790,4 @@ func (m Model) renderFilterChip() string {
 	return statusLabel.Render(" ") + filterIcon.Render("⌕ ") +
 		filterQuery.Render(m.browser.filter) +
 		filterCount.Render(fmt.Sprintf(" %d/%d", matched, total))
-}
-
-// renderTransferBar draws the indeterminate download bar: a block window that
-// sweeps across a track, advanced by the global spinner tick.
-func (m Model) renderTransferBar() string {
-	name := m.downloadingName
-	if name == "" {
-		name = "download"
-	}
-
-	const trackW, blockW = 16, 4
-	pos := 0
-	if steps := trackW - blockW + 1; steps > 0 {
-		pos = m.browser.tickCount % steps
-	}
-	var track strings.Builder
-	for i := 0; i < trackW; i++ {
-		if i >= pos && i < pos+blockW {
-			track.WriteString(transferBlock.Render("█"))
-		} else {
-			track.WriteString(transferTrack.Render("░"))
-		}
-	}
-
-	bar := transferBarStyle.Render(" ") + transferIcon.Render("⬇") + transferBarStyle.Render(" ") +
-		transferName.Render(truncate(name, 28)) + transferBarStyle.Render("  ") +
-		track.String() + transferBarStyle.Render("  ") + transferText.Render("Downloading…")
-	return fitBar(transferBarStyle, bar, m.width)
 }

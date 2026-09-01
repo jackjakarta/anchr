@@ -15,8 +15,9 @@ import (
 func testModel() Model {
 	mod := time.Date(2026, time.May, 24, 14, 32, 0, 0, time.UTC)
 	m := Model{
-		sidebar: newSidebar([]string{"el-chat", "mixbuddy-dev", "hotel-app-public", "anchr-backups"}),
-		browser: newBrowser(),
+		sidebar:    newSidebar([]string{"el-chat", "mixbuddy-dev", "hotel-app-public", "anchr-backups"}),
+		browser:    newBrowser(),
+		savePrompt: newSavePrompt(),
 		configs: []config.BucketConfig{
 			{Name: "el-chat", Region: "us-east-1"},
 			{Name: "mixbuddy-dev", Region: "us-east-1"},
@@ -70,11 +71,60 @@ func TestViewGridInvariants(t *testing.T) {
 		m.width, m.height = s.w, s.h
 		t.Run("focus-browser", func(t *testing.T) { assertGrid(t, m) })
 
-		t.Run("downloading", func(t *testing.T) {
+		// Transfer bar states. The determinate bar, the indeterminate fallback
+		// (no Content-Length yet) and the cancelling notice all have to fit the
+		// row exactly at every width.
+		t.Run("downloading-determinate", func(t *testing.T) {
 			md := m
-			md.browser.downloading = true
-			md.downloadingName = "mixdown_final.mp3"
+			md.transfer = newTransfer("mixdown_final.mp3", nil)
+			md.dlWritten, md.dlTotal = 2<<20, 5<<20
+			md.dlRate, md.dlETA = 3.1*(1<<20), 12*time.Second
 			assertGrid(t, md)
+		})
+
+		t.Run("downloading-unknown-total", func(t *testing.T) {
+			md := m
+			md.transfer = newTransfer("mixdown_final.mp3", nil)
+			assertGrid(t, md)
+		})
+
+		t.Run("downloading-cancelling", func(t *testing.T) {
+			md := m
+			md.transfer = newTransfer("mixdown_final.mp3", nil)
+			md.dlWritten, md.dlTotal = 2<<20, 5<<20
+			md.transfer.cancelled.Store(true)
+			assertGrid(t, md)
+		})
+
+		// Save-prompt states. The popup is sized like the preview popup, so a
+		// line wider than the box would soft-wrap and add a row.
+		t.Run("save-prompt", func(t *testing.T) {
+			ms := m
+			ms.savePrompt.open(0, m.browser.prefix+"mixdown_final.mp3", "mixdown_final.mp3")
+			assertGrid(t, ms)
+		})
+
+		t.Run("save-prompt-long-path", func(t *testing.T) {
+			ms := m
+			ms.savePrompt.open(0, "k", "mixdown_final.mp3")
+			ms.savePrompt.input.SetValue("/Users/somebody/very/deeply/nested/downloads/directory/" +
+				strings.Repeat("long-", 20) + "mixdown_final.mp3")
+			ms.savePrompt.input.CursorEnd()
+			assertGrid(t, ms)
+		})
+
+		t.Run("save-prompt-confirm", func(t *testing.T) {
+			ms := m
+			ms.savePrompt.open(0, "k", "mixdown_final.mp3")
+			ms.savePrompt.confirm = true
+			assertGrid(t, ms)
+		})
+
+		t.Run("save-prompt-error", func(t *testing.T) {
+			ms := m
+			ms.savePrompt.open(0, "k", "mixdown_final.mp3")
+			ms.savePrompt.err = "no such directory: /nope/nowhere/at/all/deep/enough/to/overflow"
+			assertGrid(t, ms)
 		})
 
 		t.Run("cursor-on-dotdot", func(t *testing.T) {

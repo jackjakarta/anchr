@@ -112,8 +112,18 @@ func (c *Client) ListObjects(ctx context.Context, prefix string) (*ListResult, e
 	return result, nil
 }
 
-// DownloadObject streams the object at key to destPath on the local filesystem.
-func (c *Client) DownloadObject(ctx context.Context, key, destPath string) error {
+// ProgressFunc reports download progress: bytes written so far and the object's
+// total size (0 when the store omits Content-Length). It is called from the
+// download goroutine, so an implementation must only touch atomics or channels.
+type ProgressFunc func(written, total int64)
+
+// DownloadObject streams the object at key to destPath on the local filesystem,
+// reporting progress through onProgress (which may be nil).
+//
+// Bytes land in destPath+".part" and are renamed onto destPath only once the
+// copy succeeds, so a failed or cancelled transfer never leaves a truncated file
+// that looks complete. Cancelling ctx aborts the in-flight body read.
+func (c *Client) DownloadObject(ctx context.Context, key, destPath string, onProgress ProgressFunc) error {
 	out, err := c.s3.GetObject(ctx, &s3.GetObjectInput{
 		Bucket: aws.String(c.bucket),
 		Key:    aws.String(key),
@@ -123,14 +133,46 @@ func (c *Client) DownloadObject(ctx context.Context, key, destPath string) error
 	}
 	defer out.Body.Close()
 
-	f, err := os.Create(destPath)
+	total := aws.ToInt64(out.ContentLength)
+	if onProgress != nil {
+		onProgress(0, total)
+	}
+
+	partPath := destPath + ".part"
+	f, err := os.Create(partPath)
 	if err != nil {
 		return err
 	}
-	defer f.Close()
 
-	_, err = io.Copy(f, out.Body)
-	return err
+	_, err = io.Copy(&countingWriter{w: f, total: total, fn: onProgress}, out.Body)
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err == nil {
+		err = os.Rename(partPath, destPath)
+	}
+	if err != nil {
+		os.Remove(partPath)
+		return err
+	}
+	return nil
+}
+
+// countingWriter forwards writes and reports the running total after each one.
+type countingWriter struct {
+	w       io.Writer
+	fn      ProgressFunc
+	written int64
+	total   int64
+}
+
+func (cw *countingWriter) Write(p []byte) (int, error) {
+	n, err := cw.w.Write(p)
+	cw.written += int64(n)
+	if cw.fn != nil {
+		cw.fn(cw.written, cw.total)
+	}
+	return n, err
 }
 
 // PreviewObject fetches up to maxBytes of the object at key via a ranged GET.
