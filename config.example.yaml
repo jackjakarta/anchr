@@ -30,4 +30,5 @@ buckets:
     prefix: "images/photos/"
 
 # Key binding hints:
-# j/↓ - down   k/↑ - up   enter/l - open   esc/h - back   tab - switch pane   q - quit
+# j/↓ - down   k/↑ - up   enter/l - open   esc/h - back   tab - switch pane
+# / - filter   p - preview   D - download   y/Y - copy key/uri   u - presign   q - quit

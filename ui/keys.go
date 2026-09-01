@@ -15,6 +15,7 @@ type keyMap struct {
 	CopyURI     key.Binding
 	PresignURL  key.Binding
 	Preview     key.Binding
+	Filter      key.Binding
 	Sort        key.Binding
 	SortReverse key.Binding
 	Quit        key.Binding
@@ -68,6 +69,10 @@ var keys = keyMap{
 	Preview: key.NewBinding(
 		key.WithKeys("p"),
 		key.WithHelp("p", "preview"),
+	),
+	Filter: key.NewBinding(
+		key.WithKeys("/"),
+		key.WithHelp("/", "filter"),
 	),
 	Sort: key.NewBinding(
 		key.WithKeys("s"),

@@ -13,6 +13,7 @@ A fast terminal UI for browsing S3 and S3-compatible object storage.
 - Preview file contents without leaving the terminal
 - Copy object keys / `s3://` URIs and mint presigned download URLs
 - Sort listings by name, size, or last-modified
+- Filter the current listing with `/` (smart-case substring match)
 - Optional prefix filtering to start inside a folder
 - Single static binary, no dependencies
 
@@ -91,6 +92,7 @@ anchr --version        # print version
 | `enter`/`l` | open folder |
 | `esc`/`h` | go back |
 | `tab`, `←`/`→` | switch pane |
+| `/` | filter listing (`enter` keeps it, `esc` clears) |
 | `p` | preview file |
 | `D` | download file |
 | `y` / `Y` | copy key / `s3://` URI |

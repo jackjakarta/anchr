@@ -134,6 +134,16 @@ var (
 	keyQuit   = darkBase.Foreground(cRed).Bold(true)     // q
 )
 
+// ── Filter (the `/` input and its committed chip) ───────────────────
+// All on darkBase so they carry the status-bar background. The matched runes
+// in a file-list row are coloured at the call site instead, from the row base.
+var (
+	filterIcon  = darkBase.Foreground(cYellow).Bold(true) // ⌕
+	filterQuery = darkBase.Foreground(cFgBri)
+	filterCaret = darkBase.Foreground(cYellow)
+	filterCount = darkBase.Foreground(cFgDim)
+)
+
 // ── Misc / states ───────────────────────────────────────────────────
 var (
 	errorStyle   = appBase.Foreground(cRed).Bold(true)

@@ -164,6 +164,35 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	// While the `/` input has focus it captures every key, so nothing leaks to
+	// the browser actions underneath — s, y, D, q and h/l would all fire
+	// mid-word otherwise.
+	if m.browser.filtering {
+		switch msg.Type {
+		case tea.KeyCtrlC:
+			return m, tea.Quit
+		case tea.KeyRunes, tea.KeySpace:
+			// A lone space arrives as KeySpace, not KeyRunes, but still carries
+			// Runes; alt-modified runes are not filter input.
+			if !msg.Alt {
+				m.browser.filterAppend(string(msg.Runes))
+			}
+		case tea.KeyBackspace:
+			m.browser.filterBackspace()
+		case tea.KeyCtrlU:
+			m.browser.setFilter("")
+		case tea.KeyEsc:
+			m.browser.cancelFilter()
+		case tea.KeyEnter:
+			m.browser.commitFilter()
+		case tea.KeyUp:
+			m.browser.cursorUp()
+		case tea.KeyDown:
+			m.browser.cursorDown()
+		}
+		return m, nil
+	}
+
 	switch {
 	case key.Matches(msg, keys.Quit):
 		return m, tea.Quit
@@ -214,6 +243,12 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m.openItem()
 
+	case msg.Type == tea.KeyEsc && m.focus == focusBrowser && m.browser.filter != "":
+		// First esc drops the filter, a second one navigates up. keys.Back also
+		// binds "h" and backspace, which must keep going up unconditionally.
+		m.browser.clearFilter()
+		return m, nil
+
 	case key.Matches(msg, keys.Back):
 		if m.focus == focusBrowser {
 			return m.goBack()
@@ -247,6 +282,12 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, keys.Preview):
 		if m.focus == focusBrowser {
 			return m.startPreview()
+		}
+		return m, nil
+
+	case key.Matches(msg, keys.Filter):
+		if m.focus == focusBrowser {
+			m.browser.startFilter()
 		}
 		return m, nil
 
@@ -625,6 +666,10 @@ func maybeEllipsize(s string) string {
 func (m Model) renderStatusBar() string {
 	var left string
 	switch {
+	case m.browser.filtering:
+		left = m.renderFilterInput()
+	case m.browser.filter != "":
+		left = m.renderFilterChip() + statusLabel.Render(" ") + m.statusHints()
 	case m.preview.active:
 		left = statusLabel.Render(" ") +
 			keyChip(keyNav, "↑↓/jk", "scroll") + statusLabel.Render("  ") +
@@ -664,6 +709,7 @@ func (m Model) statusHints() string {
 		keyChip(keyNav, "↑↓", "nav"),
 		keyChip(keyNav, "⏎", "open"),
 		keyChip(keyNav, "esc", "back"),
+		keyChip(keyAction, "/", "filter"),
 		keyChip(keyAction, "D", "download"),
 		keyChip(keyAction, "p", "preview"),
 		keyChip(keyYank, "y/Y", "copy"),
@@ -673,6 +719,25 @@ func (m Model) statusHints() string {
 		keyChip(keyQuit, "q", "quit"),
 	}
 	return statusLabel.Render(" ") + strings.Join(chips, statusLabel.Render("  "))
+}
+
+// renderFilterInput draws the live `/` input: the ⌕ glyph, the query, a block
+// caret and the match count. It replaces the key hints while typing and flows
+// through the same MaxWidth/fitBar truncation, so it cannot overflow the bar.
+func (m Model) renderFilterInput() string {
+	matched, total := m.browser.matchCount()
+	return statusLabel.Render(" ") + filterIcon.Render("⌕ ") +
+		filterQuery.Render(m.browser.filter) + filterCaret.Render("▏") +
+		filterCount.Render(fmt.Sprintf("  %d/%d", matched, total))
+}
+
+// renderFilterChip draws the committed-filter indicator that sits ahead of the
+// normal key hints, so an active filter is never invisible.
+func (m Model) renderFilterChip() string {
+	matched, total := m.browser.matchCount()
+	return statusLabel.Render(" ") + filterIcon.Render("⌕ ") +
+		filterQuery.Render(m.browser.filter) +
+		filterCount.Render(fmt.Sprintf(" %d/%d", matched, total))
 }
 
 // renderTransferBar draws the indeterminate download bar: a block window that
