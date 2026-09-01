@@ -75,6 +75,14 @@ func kindFor(item s3client.S3Item) fileKind {
 	return kindDefault
 }
 
+// isImageKind reports whether an item's extension marks it as an image. It is
+// deliberately broad (it matches webp/svg, which decodeImage cannot read)
+// because its only job is picking the preview fetch budget — whether the bytes
+// are actually renderable is decided from their header by imageConfig.
+func isImageKind(item s3client.S3Item) bool {
+	return strings.HasPrefix(kindFor(item).Mime, "image/")
+}
+
 // fileType is the preview pane's "Type" value: the curated mime when the kind
 // is known, else the stdlib mime table (broad), else a generic "<ext> file".
 func fileType(item s3client.S3Item) string {

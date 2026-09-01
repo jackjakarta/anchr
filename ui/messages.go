@@ -36,6 +36,15 @@ type PresignedURLGeneratedMsg struct {
 	Err error
 }
 
+// ImageRenderedMsg is emitted after a preview payload has been decoded, scaled
+// and turned into terminal cells. Decoding a 10 MB JPEG is far too slow for
+// Update, so it runs as a tea.Cmd like every other unit of work in the app.
+type ImageRenderedMsg struct {
+	Rows []string
+	Cols int
+	Err  error
+}
+
 // ObjectPreviewLoadedMsg is emitted after a ranged preview fetch completes.
 type ObjectPreviewLoadedMsg struct {
 	Content     []byte

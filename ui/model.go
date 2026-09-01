@@ -2,6 +2,7 @@ package ui
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path"
 	"strings"
@@ -57,6 +58,19 @@ type Model struct {
 	dlTotal   int64
 	dlRate    float64 // bytes/sec, averaged over the transfer so far
 	dlETA     time.Duration
+
+	// Cancels the in-flight preview fetch. An image preview may pull up to
+	// imagePreviewMaxBytes, so closing the popup (or previewing something else)
+	// must not leave 10 MB still coming down the wire.
+	cancelPreview context.CancelFunc
+}
+
+// stopPreviewFetch aborts an in-flight preview fetch, if any.
+func (m *Model) stopPreviewFetch() {
+	if m.cancelPreview != nil {
+		m.cancelPreview()
+		m.cancelPreview = nil
+	}
 }
 
 func NewModel(cfg *config.Config, clients []*s3client.Client) Model {
@@ -86,6 +100,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 		m.updateLayout()
+		// An image is rasterised for one specific box, so a resize has to
+		// re-render it (the bytes are already in hand — no refetch).
+		if m.preview.active && m.preview.hasImage() {
+			m.preview.img.rendering = true
+			return m, m.renderImage()
+		}
 		return m, nil
 
 	case spinner.TickMsg:
@@ -144,11 +164,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case ObjectPreviewLoadedMsg:
+		m.cancelPreview = nil
 		if msg.Err != nil {
+			if errors.Is(msg.Err, context.Canceled) {
+				return m, nil // the popup was closed mid-fetch
+			}
 			m.preview.setError(msg.Err)
-		} else {
-			m.preview.setContent(msg.Content, msg.ContentType)
+			return m, nil
 		}
+		m.preview.setContent(msg.Content, msg.ContentType)
+		if m.preview.hasImage() {
+			return m, m.renderImage()
+		}
+		return m, nil
+
+	case ImageRenderedMsg:
+		m.preview.setImageRows(msg.Rows, msg.Cols, msg.Err)
 		return m, nil
 
 	case tea.KeyMsg:
@@ -173,6 +204,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case key.Matches(msg, keys.Down):
 			m.preview.scrollDown(m.contentHeight())
 		case key.Matches(msg, keys.Back), key.Matches(msg, keys.Preview), key.Matches(msg, keys.Quit):
+			m.stopPreviewFetch()
 			m.preview.close()
 		}
 		return m, nil
@@ -492,15 +524,61 @@ func (m Model) startPreview() (tea.Model, tea.Cmd) {
 	if !ok || item.IsDir || item.Name == "../" {
 		return m, nil
 	}
+	m.stopPreviewFetch() // a previous preview may still be downloading
 	m.preview.open(item.Name)
-	return m, m.loadPreview(m.sidebar.cursor, item.Key)
+
+	// Images need far more than the text budget to decode at all.
+	maxBytes := int64(previewMaxBytes)
+	if isImageKind(item) {
+		maxBytes = imagePreviewMaxBytes
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	m.cancelPreview = cancel
+	return m, m.loadPreview(ctx, m.sidebar.cursor, item.Key, maxBytes)
 }
 
-func (m Model) loadPreview(clientIdx int, key string) tea.Cmd {
+func (m Model) loadPreview(ctx context.Context, clientIdx int, key string, maxBytes int64) tea.Cmd {
 	client := m.clients[clientIdx]
 	return func() tea.Msg {
-		content, contentType, err := client.PreviewObject(context.Background(), key, previewMaxBytes)
+		content, contentType, err := client.PreviewObject(ctx, key, maxBytes)
 		return ObjectPreviewLoadedMsg{Content: content, ContentType: contentType, Err: err}
+	}
+}
+
+// renderImage decodes, scales and rasterises the pending preview image off the
+// UI thread. It is re-issued on resize so the picture always matches the box.
+func (m Model) renderImage() tea.Cmd {
+	img := m.preview.img
+	if img == nil || img.backend == backendNone {
+		return nil
+	}
+
+	data, backend := img.data, img.backend
+	maxCols := imageBoxWidth(m.width) - 4
+	maxRows := imageBodyRows(m.contentHeight()) - 2 // leave the caption its blank line + row
+
+	return func() tea.Msg {
+		if maxCols < 1 || maxRows < 1 {
+			return ImageRenderedMsg{} // no room; the popup shows a note
+		}
+
+		decoded, _, err := decodeImage(data)
+		if err != nil {
+			return ImageRenderedMsg{Err: err}
+		}
+
+		b := decoded.Bounds()
+		cols, rows := fitCells(b.Dx(), b.Dy(), maxCols, maxRows)
+		if cols < 1 || rows < 1 {
+			return ImageRenderedMsg{}
+		}
+
+		if backend == backendKitty {
+			out, err := kittyRows(decoded, kittyImageID, cols, rows)
+			return ImageRenderedMsg{Rows: out, Cols: cols, Err: err}
+		}
+		return ImageRenderedMsg{Rows: renderHalfblocks(decoded, cols, rows, previewBgRGBA), Cols: cols}
 	}
 }
 
