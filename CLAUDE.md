@@ -66,6 +66,8 @@ when done on `m.sidebar`/`m.browser` before returning `m`.
 - The `browser` sorts in-memory by name/size/modified (`s` cycles the field, `S`
   toggles direction); directories always sort first, and `restoreCursor` keeps the
   selection pinned to the same key across re-sorts.
+- `/` filters the listing in memory (see "The `/` filter" below). `items` always
+  holds the full listing; `rows()` is what the list actually renders from.
 
 ### Object actions & keybindings
 
@@ -83,10 +85,40 @@ transient `m.status`, and returns a `tea.Cmd` for the I/O. They are:
 - `y` / `Y` — copy the object key / `s3://bucket/key` URI to the clipboard
 - `u` — presigned GET URL (valid `presignExpiry`, 1h), copied to the clipboard
 - `s` / `S` — cycle sort field / toggle direction
+- `/` — filter the listing (input mode, see below)
 
 Clipboard writes go through `github.com/atotto/clipboard`. `m.status` is the
 transient feedback line in the status bar; **any keypress clears it** (the first
 line of `handleKey`), so it's for one-shot confirmations, not persistent state.
+
+### The `/` filter
+
+`filter.go` owns the filter. `browser.items` always keeps the full listing and
+`browser.matches` holds the narrowed projection, so clearing the filter restores
+everything without a refetch. **Anything that indexes the listing must go through
+`browser.rows()`** — `itemCount`, `selectedItem`, `renderItem`, `totalSize`,
+`statusPosition` and `restoreCursor` all do. The one deliberate exception is
+`fileCount`, kept on `items` because the sidebar badge describes the bucket, not
+the filtered view.
+
+Matching is smart-case substring (`matchIndex`): an all-lowercase query is
+case-insensitive, any uppercase rune makes it case-sensitive. It returns a
+**rune** index, which `renderNameCell` uses to colour the matched run — that
+helper must return exactly `nameW` cells or the whole grid shifts, so it is
+covered by both `TestRenderNameCellWidth` and the filter states in
+`TestViewGridInvariants`.
+
+**Gotchas:**
+
+- `applySort` reorders `items` in place, so `cycleSort`/`toggleReverse` must call
+  `applyFilter()` afterwards or `matches` goes stale.
+- `setItems` clears the filter — that single reset is what drops it on folder
+  entry, `goBack` and bucket switch.
+- `m.browser.filtering` captures *every* key at the top of `handleKey` (mirroring
+  the `m.preview.active` block), otherwise `s`/`y`/`D`/`q` fire mid-word.
+- `keys.Back` also binds `h` and backspace, so the "first esc clears the filter,
+  a second navigates up" case is keyed on `tea.KeyEsc` directly and sits *before*
+  the `keys.Back` case. `h` keeps meaning "go up" unconditionally.
 
 ### V3 "Rich · Gruvbox" rendering
 

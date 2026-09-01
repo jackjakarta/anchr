@@ -82,6 +82,48 @@ func TestViewGridInvariants(t *testing.T) {
 			mc.browser.cursor = 0 // synthetic "../"
 			assertGrid(t, mc)
 		})
+
+		// The `/` filter states. These exercise renderNameCell, whose split NAME
+		// cell must still occupy exactly nameW cells for the grid to hold.
+		t.Run("filter-typing", func(t *testing.T) {
+			mf := m
+			mf.browser.startFilter()
+			mf.browser.setFilter("mix")
+			assertGrid(t, mf)
+		})
+
+		t.Run("filter-committed-cursor-on-match", func(t *testing.T) {
+			mf := m
+			mf.browser.setFilter("a")
+			mf.browser.commitFilter()
+			mf.browser.cursor = 1 // first match, so the cursor row carries a highlight
+			assertGrid(t, mf)
+		})
+
+		t.Run("filter-match-truncated", func(t *testing.T) {
+			// The match sits at the tail of the longest name, so at narrow widths
+			// the highlight is clipped by truncate().
+			mf := m
+			mf.browser.setFilter("wav")
+			mf.browser.commitFilter()
+			mf.browser.cursor = 1
+			assertGrid(t, mf)
+		})
+
+		t.Run("filter-no-matches", func(t *testing.T) {
+			mf := m
+			mf.browser.startFilter()
+			mf.browser.setFilter("zzzznope")
+			assertGrid(t, mf)
+		})
+
+		t.Run("filter-no-matches-at-root", func(t *testing.T) {
+			// No "../" row, so the pane holds only the header and the note.
+			mf := m
+			mf.browser.prefix = ""
+			mf.browser.setFilter("zzzznope")
+			assertGrid(t, mf)
+		})
 	}
 }
 

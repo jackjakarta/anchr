@@ -49,6 +49,13 @@ type browser struct {
 	sortBy      sortKey
 	sortReverse bool
 	tickCount   int // advanced on every spinner tick; animates the transfer bar
+
+	// Filter state. items always holds the full listing; matches is the narrowed
+	// projection rendered while filter is non-empty, so clearing the filter
+	// restores everything without a refetch.
+	filter    string            // active query; "" = inactive
+	filtering bool              // true while the `/` input has focus
+	matches   []s3client.S3Item // nil when filter == ""
 }
 
 func newBrowser() browser {
@@ -68,6 +75,9 @@ func (b *browser) setItems(result *s3client.ListResult) {
 	b.offset = 0
 	b.loading = false
 	b.err = nil
+	b.filter = ""
+	b.filtering = false
+	b.matches = nil
 	b.applySort()
 }
 
@@ -93,7 +103,7 @@ func (b *browser) cursorDown() {
 }
 
 func (b *browser) itemCount() int {
-	n := len(b.items)
+	n := len(b.rows())
 	if b.canGoBack() {
 		n++ // "../" entry
 	}
@@ -119,7 +129,7 @@ func (b browser) fileCount() int {
 // totalSize sums the byte sizes of the file objects in the current listing.
 func (b browser) totalSize() int64 {
 	var sum int64
-	for _, it := range b.items {
+	for _, it := range b.rows() {
 		if !it.IsDir {
 			sum += it.Size
 		}
@@ -131,12 +141,12 @@ func (b browser) totalSize() int64 {
 // (the synthetic "../" yields 0) and the total row count. Used by the status
 // bar's "item N of M".
 func (b browser) statusPosition() (pos, total int) {
-	total = len(b.items)
+	total = len(b.rows())
 	sel, ok := b.selectedItem()
 	if !ok || sel.Name == "../" {
 		return 0, total
 	}
-	for i, it := range b.items {
+	for i, it := range b.rows() {
 		if it.Key == sel.Key {
 			return i + 1, total
 		}
@@ -145,7 +155,8 @@ func (b browser) statusPosition() (pos, total int) {
 }
 
 func (b *browser) selectedItem() (s3client.S3Item, bool) {
-	if len(b.items) == 0 && !b.canGoBack() {
+	rows := b.rows()
+	if len(rows) == 0 && !b.canGoBack() {
 		return s3client.S3Item{}, false
 	}
 	idx := b.cursor
@@ -155,10 +166,10 @@ func (b *browser) selectedItem() (s3client.S3Item, bool) {
 		}
 		idx--
 	}
-	if idx >= len(b.items) {
+	if idx >= len(rows) {
 		return s3client.S3Item{}, false
 	}
-	return b.items[idx], true
+	return rows[idx], true
 }
 
 func (b *browser) applySort() {
@@ -187,6 +198,7 @@ func (b *browser) cycleSort() {
 	sel, _ := b.selectedItem()
 	b.sortBy = (b.sortBy + 1) % 3
 	b.applySort()
+	b.applyFilter()
 	b.restoreCursor(sel.Key)
 }
 
@@ -194,6 +206,7 @@ func (b *browser) toggleReverse() {
 	sel, _ := b.selectedItem()
 	b.sortReverse = !b.sortReverse
 	b.applySort()
+	b.applyFilter()
 	b.restoreCursor(sel.Key)
 }
 
@@ -207,7 +220,7 @@ func (b *browser) restoreCursor(key string) {
 	if b.canGoBack() {
 		base = 1 // account for the "../" entry at index 0
 	}
-	for i, it := range b.items {
+	for i, it := range b.rows() {
 		if it.Key == key {
 			b.cursor = base + i
 			break
@@ -282,16 +295,33 @@ func (b browser) View() string {
 	sb.WriteString(b.renderHeader(nameW))
 	sb.WriteString("\n")
 
-	if b.itemCount() == 0 {
-		sb.WriteString(emptyStyle.Render("  (empty)"))
-		return sb.String()
-	}
-
 	headerRows := 1 // column header
 	visible := b.height - headerRows
 	if visible < 1 {
 		visible = 1
 	}
+
+	// A filter matching nothing still shows "../" so there is a way to climb
+	// out; the dim note explains why the list is empty. Bounded by visible so
+	// the block can never overflow the content height.
+	if b.filter != "" && len(b.matches) == 0 {
+		lines := make([]string, 0, 2)
+		if b.canGoBack() {
+			lines = append(lines, b.renderItem(0, nameW))
+		}
+		lines = append(lines, emptyStyle.Render(fmt.Sprintf("  no matches for %q", b.filter)))
+		if len(lines) > visible {
+			lines = lines[:visible]
+		}
+		sb.WriteString(strings.Join(lines, "\n"))
+		return sb.String()
+	}
+
+	if b.itemCount() == 0 {
+		sb.WriteString(emptyStyle.Render("  (empty)"))
+		return sb.String()
+	}
+
 	end := b.offset + visible
 	if end > b.itemCount() {
 		end = b.itemCount()
@@ -377,7 +407,7 @@ func (b browser) renderItem(index, nameW int) string {
 	if isBack {
 		item = s3client.S3Item{Name: "../", IsDir: true}
 	} else {
-		item = b.items[adjustedIndex]
+		item = b.rows()[adjustedIndex]
 	}
 
 	isCursor := index == b.cursor
@@ -410,7 +440,12 @@ func (b browser) renderItem(index, nameW int) string {
 		}
 	}
 
-	name := truncate(item.Name, nameW)
+	// Resolve the filter highlight range ("../" is chrome and never matches).
+	hi, hiLen := -1, 0
+	if b.filter != "" && !isBack {
+		hi, hiLen = matchIndex(item.Name, b.filter), len([]rune(b.filter))
+	}
+
 	icon := k.Icon
 	if isBack {
 		icon = "↰"
@@ -451,7 +486,7 @@ func (b browser) renderItem(index, nameW int) string {
 		sb.WriteString(base.Render(" "))
 	}
 	sb.WriteString(iconStyle.Width(colIcon).Render(icon))
-	sb.WriteString(nameStyle.Width(nameW).Render(name))
+	sb.WriteString(renderNameCell(base, nameStyle, item.Name, hi, hiLen, nameW))
 	sb.WriteString(base.Render(" "))
 	sb.WriteString(kindCell(base, badgeStr))
 	sb.WriteString(base.Render(" "))
@@ -476,6 +511,44 @@ func kindCell(base lipgloss.Style, badgeStr string) string {
 	lp := (colKind - bw) / 2
 	rp := colKind - bw - lp
 	return base.Render(strings.Repeat(" ", lp)) + badgeStr + base.Render(strings.Repeat(" ", rp))
+}
+
+// renderNameCell renders name into exactly w display cells. When hi >= 0 the
+// hiLen runes starting at rune index hi are painted as the filter match. Every
+// segment derives from the row styles so it carries the row background (a
+// wrapper background does not bleed through inner styled segments), and the
+// assembly is measured then padded — Width() cannot pad a multi-segment string.
+func renderNameCell(base, nameStyle lipgloss.Style, name string, hi, hiLen, w int) string {
+	vis := truncate(name, w)
+	if hi < 0 || hiLen <= 0 {
+		return nameStyle.Width(w).Render(vis)
+	}
+
+	// Clamp the highlight to the runes that survived truncation, stopping short
+	// of the ellipsis truncate() may have appended.
+	r := []rune(vis)
+	limit := len(r)
+	if len([]rune(name)) > w && limit > 0 {
+		limit--
+	}
+	start, end := hi, hi+hiLen
+	if start > limit {
+		start = limit
+	}
+	if end > limit {
+		end = limit
+	}
+	if start >= end {
+		return nameStyle.Width(w).Render(vis)
+	}
+
+	out := nameStyle.Render(string(r[:start])) +
+		nameStyle.Foreground(cGreen).Bold(true).Render(string(r[start:end])) +
+		nameStyle.Render(string(r[end:]))
+	if pad := w - lipgloss.Width(out); pad > 0 {
+		out += base.Render(strings.Repeat(" ", pad))
+	}
+	return out
 }
 
 func (b browser) nameWidth() int {
