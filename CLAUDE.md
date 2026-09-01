@@ -78,9 +78,10 @@ the two in sync. **Gotcha:** Shift-letter keys arrive as the uppercase rune, so
 
 The browser-pane actions all follow the same shape in `model.go`: a `start*`
 method guards the selection (`!ok || item.IsDir || item.Name == "../"`), sets a
-transient `m.status`, and returns a `tea.Cmd` for the I/O. They are:
+transient `m.status`, and returns a `tea.Cmd` for the I/O (`D` opens the save
+prompt first and starts its `tea.Cmd`s on confirm). They are:
 
-- `D` — download (native macOS save panel, see below)
+- `D` — download (in-TUI save-path prompt + progress bar, see below)
 - `p` — preview popup (async ranged fetch, 64 KB)
 - `y` / `Y` — copy the object key / `s3://bucket/key` URI to the clipboard
 - `u` — presigned GET URL (valid `presignExpiry`, 1h), copied to the clipboard
@@ -115,7 +116,8 @@ covered by both `TestRenderNameCellWidth` and the filter states in
 - `setItems` clears the filter — that single reset is what drops it on folder
   entry, `goBack` and bucket switch.
 - `m.browser.filtering` captures *every* key at the top of `handleKey` (mirroring
-  the `m.preview.active` block), otherwise `s`/`y`/`D`/`q` fire mid-word.
+  the `m.preview.active` and `m.savePrompt.active` blocks), otherwise
+  `s`/`y`/`D`/`q` fire mid-word.
 - `keys.Back` also binds `h` and backspace, so the "first esc clears the filter,
   a second navigates up" case is keyed on `tea.KeyEsc` directly and sits *before*
   the `keys.Back` case. `h` keeps meaning "go up" unconditionally.
@@ -123,9 +125,9 @@ covered by both `TestRenderNameCellWidth` and the filter states in
 ### V3 "Rich · Gruvbox" rendering
 
 The UI is the V3 design: a top bar (`anchr` pill + breadcrumb + region), a
-three-column body (sidebar | file list | always-on metadata pane), an
-indeterminate transfer bar shown only while downloading, and a colored-key
-status bar. Layout-relevant files:
+three-column body (sidebar | file list | always-on metadata pane), a transfer
+bar shown only while downloading, and a colored-key status bar. Layout-relevant
+files:
 
 - **`styles.go`** — the Gruvbox palette (`c*` color vars) and every `lipgloss`
   style, grouped by region. Each pane paints its own background, so leaf styles
@@ -149,20 +151,47 @@ status bar. Layout-relevant files:
 
 ### Async and messages
 
-All I/O (listing, downloading, the save dialog, presign, preview fetch) runs off
-the UI thread as `tea.Cmd`s that return one of the message types in `messages.go`
-(`ObjectsLoadedMsg`, `DownloadPathChosenMsg`, `FileDownloadedMsg`,
+All I/O (listing, downloading, presign, preview fetch) runs off the UI thread as
+`tea.Cmd`s that return one of the message types in `messages.go`
+(`ObjectsLoadedMsg`, `DownloadProgressMsg`, `FileDownloadedMsg`,
 `PresignedURLGeneratedMsg`, `ObjectPreviewLoadedMsg`). The root `Update` switches
 on these. When adding new async work, define a `Msg` type, return a `tea.Cmd`
 closure that produces it, and handle it in `Update` — never block in `Update`
 itself. (`BucketSelectedMsg`/`NavigateMsg` are defined but currently inert — not
 dispatched anywhere.)
 
-### macOS-only download
+### Downloads
 
-`chooseDownloadDest` in `model.go` shells out to `osascript` to show the native
-macOS save panel. **Downloads currently only work on macOS.** Adding Linux
-support means replacing this with a cross-platform path prompt.
+Downloads are pure Go and work on every platform — there is no `osascript` save
+panel any more. Three pieces, all in `ui/download.go` unless noted:
+
+- **`saveprompt.go`** — `D` opens a centered "Save as" popup (a plain struct with
+  methods, like `preview`) wrapping a `bubbles/textinput`. It is prefilled from
+  `defaultDownloadPath` (`$XDG_DOWNLOAD_DIR` → `~/Downloads` → `~`) and captures
+  every key at the top of `handleKey`, exactly like the preview and `/` blocks.
+  `resolveDest` expands `~`, appends the object name when the path names a
+  directory, rejects a missing parent inline, and asks for a second `enter`
+  before overwriting an existing file (any edit clears that confirmation).
+  The input's styles must all derive from `darkBase` — it renders its own SGR
+  reset, so a popup background does not reach it — and its cursor is set to
+  `cursor.CursorStatic` so the root `Update` needs no `cursor.BlinkMsg` case.
+- **`transfer`** — the in-flight download's state, held as `Model.transfer`
+  (nil = idle). **Always by pointer:** it holds `atomic.Int64`s, which embed
+  `noCopy`, and `Model` is copied by value on every `Update`. The download
+  goroutine only stores into the atomics (`transfer.note`, handed to
+  `s3client.DownloadObject` as its `ProgressFunc`) and `pollProgress` — a
+  `tea.Tick` re-armed from the `DownloadProgressMsg` handler — only loads them.
+  Rate and ETA are computed in that handler, not in `View`, so rendering stays a
+  pure function of the model.
+- **`renderTransferBar`** — determinate when the sample carries a total
+  (percentage + throughput + ETA), falling back to the old sweeping block when
+  the store omitted `Content-Length`. Segment order matters: `fitBar` truncates
+  from the right, so the least important information disappears first on a narrow
+  terminal. `ctrl+x` (`keys.CancelDL`) aborts via `transfer.abort()`; `esc` is
+  deliberately left alone so "go back" keeps working during a transfer.
+
+`s3client.DownloadObject` streams into `<dest>.part` and renames onto `dest` only
+on success, removing the partial file on any error or cancellation.
 
 ## Release & deploy
 

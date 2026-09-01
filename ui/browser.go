@@ -40,7 +40,6 @@ type browser struct {
 	prefixStack []string
 	focused     bool
 	loading     bool
-	downloading bool
 	err         error
 	spinner     spinner.Model
 	width       int

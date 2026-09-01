@@ -120,6 +120,9 @@ var (
 	transferTrack    = panelBase.Foreground(cFgDimr) // ░
 	transferBlock    = panelBase.Foreground(cYellow) // █
 	transferText     = panelBase.Foreground(cFgDim)
+	transferPct      = panelBase.Foreground(cFgBri).Bold(true)
+	transferMeta     = panelBase.Foreground(cFgMut) // rate / ETA
+	transferHint     = panelBase.Foreground(cFgDimr)
 )
 
 // ── Status bar ──────────────────────────────────────────────────────
@@ -162,6 +165,25 @@ var (
 
 	previewTitle = darkBase.Foreground(cYellow).Bold(true)
 	previewMeta  = darkBase.Foreground(cFgDim)
+)
+
+// ── Save prompt (the `D` destination popup) ─────────────────────────
+// All on darkBase so they carry the popup background; the text input renders
+// its own styled segments, so its styles have to carry it too.
+var (
+	savePromptBox = lipgloss.NewStyle().
+			Background(cDarkBg).
+			Foreground(cFg).
+			BorderStyle(lipgloss.RoundedBorder()).
+			BorderForeground(cYellow).
+			Padding(0, 1)
+
+	savePromptTitle = darkBase.Foreground(cYellow).Bold(true)
+	savePromptArrow = darkBase.Foreground(cYellow)
+	savePromptText  = darkBase.Foreground(cFgBri)
+	savePromptHint  = darkBase.Foreground(cFgDim)
+	savePromptWarn  = darkBase.Foreground(cOrange).Bold(true)
+	savePromptErr   = darkBase.Foreground(cRed).Bold(true)
 )
 
 // ── Render helpers ──────────────────────────────────────────────────
