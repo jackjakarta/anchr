@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -125,6 +126,105 @@ func TestViewGridInvariants(t *testing.T) {
 			ms.savePrompt.open(0, "k", "mixdown_final.mp3")
 			ms.savePrompt.err = "no such directory: /nope/nowhere/at/all/deep/enough/to/overflow"
 			assertGrid(t, ms)
+		})
+
+		// Preview popup states. The popup replaces the whole body, and the
+		// image rows carry raw SGR/APC payloads that bypass truncate(), so this
+		// is the only thing standing between a bad cell count and a torn frame.
+		t.Run("preview-loading", func(t *testing.T) {
+			mp := m
+			mp.preview.open("notes.txt")
+			assertGrid(t, mp)
+		})
+
+		t.Run("preview-text", func(t *testing.T) {
+			mp := m
+			mp.preview.open("notes.txt")
+			mp.preview.setContent([]byte("hello\nworld\n"+strings.Repeat("wide ", 60)), "text/plain")
+			assertGrid(t, mp)
+		})
+
+		t.Run("preview-binary", func(t *testing.T) {
+			mp := m
+			mp.preview.open("archive.zip")
+			mp.preview.setContent([]byte{0x50, 0x4b, 0x03, 0x04, 0x00, 0x00, 0xff}, "application/zip")
+			assertGrid(t, mp)
+		})
+
+		t.Run("preview-error", func(t *testing.T) {
+			mp := m
+			mp.preview.open("cover.png")
+			mp.preview.setError(errors.New("AccessDenied: not authorized to perform s3:GetObject"))
+			assertGrid(t, mp)
+		})
+
+		// One subtest per backend, at every terminal size, for a few aspect
+		// ratios: a landscape photo, a tall portrait, and a wide banner that
+		// squeezes down to very few rows.
+		for _, backend := range []struct {
+			name string
+			b    imageBackend
+		}{
+			{"halfblock", backendHalfblock},
+			{"kitty", backendKitty},
+			{"none", backendNone},
+		} {
+			for _, src := range []struct {
+				name string
+				w, h int
+			}{
+				{"landscape", 1920, 1080},
+				{"portrait", 600, 1600},
+				{"banner", 2000, 120},
+				{"tiny", 2, 2},
+			} {
+				t.Run("preview-image-"+backend.name+"-"+src.name, func(t *testing.T) {
+					mp := m
+					mp.preview.open("cover.png")
+					mp.preview.setContent(encodePNG(t, gradientImage(src.w, src.h)), "image/png")
+					if mp.preview.img == nil {
+						t.Fatal("setContent did not detect a PNG payload as an image")
+					}
+					mp.preview.img.backend = backend.b
+
+					// Run the render command the model would dispatch, so the
+					// test covers the real rows rather than a stand-in.
+					if cmd := mp.renderImage(); cmd != nil {
+						msg, ok := cmd().(ImageRenderedMsg)
+						if !ok {
+							t.Fatal("renderImage did not produce an ImageRenderedMsg")
+						}
+						if msg.Err != nil {
+							t.Fatalf("renderImage: %v", msg.Err)
+						}
+						mp.preview.setImageRows(msg.Rows, msg.Cols, msg.Err)
+					}
+					assertGrid(t, mp)
+				})
+			}
+		}
+
+		// A resize arrives before the re-render lands, so the popup briefly
+		// holds rows sized for the *previous* box. That frame must still fit.
+		t.Run("preview-image-stale-rows", func(t *testing.T) {
+			mp := m
+			mp.preview.open("cover.png")
+			mp.preview.setContent(encodePNG(t, gradientImage(1920, 1080)), "image/png")
+			if cmd := mp.renderImage(); cmd != nil {
+				msg := cmd().(ImageRenderedMsg)
+				mp.preview.setImageRows(msg.Rows, msg.Cols, msg.Err)
+			}
+			// Now shrink hard without re-rendering.
+			mp.width, mp.height = 60, 20
+			assertGrid(t, mp)
+		})
+
+		t.Run("preview-image-render-failed", func(t *testing.T) {
+			mp := m
+			mp.preview.open("cover.png")
+			mp.preview.setContent(encodePNG(t, gradientImage(64, 64)), "image/png")
+			mp.preview.setImageRows(nil, 0, errUnsupportedImage)
+			assertGrid(t, mp)
 		})
 
 		t.Run("cursor-on-dotdot", func(t *testing.T) {

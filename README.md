@@ -11,6 +11,8 @@ A fast terminal UI for browsing S3 and S3-compatible object storage.
 - Keyboard-driven two-pane navigation (bucket sidebar + object browser)
 - Download files with a save-path prompt, live progress, and `ctrl+x` to cancel
 - Preview file contents without leaving the terminal
+- Inline image previews — real pixels on kitty/Ghostty/WezTerm, colored
+  halfblocks everywhere else
 - Copy object keys / `s3://` URIs and mint presigned download URLs
 - Sort listings by name, size, or last-modified
 - Filter the current listing with `/` (smart-case substring match)
@@ -93,10 +95,32 @@ anchr --version        # print version
 | `esc`/`h` | go back |
 | `tab`, `←`/`→` | switch pane |
 | `/` | filter listing (`enter` keeps it, `esc` clears) |
-| `p` | preview file |
+| `p` | preview file (images render inline) |
 | `D` | download file (prompt: `enter` save, `esc` cancel) |
 | `ctrl+x` | cancel the download in progress |
 | `y` / `Y` | copy key / `s3://` URI |
 | `u` | copy presigned URL |
 | `s` / `S` | cycle sort field / reverse |
 | `q` | quit |
+
+## Image previews
+
+Pressing `p` on a PNG, JPEG or GIF renders the picture in the preview popup.
+
+anchr picks a rendering backend from the environment:
+
+- **kitty graphics** on kitty, Ghostty and WezTerm — real pixels, using Unicode
+  virtual placements so the image scrolls and clears with the rest of the UI.
+- **Colored halfblocks** everywhere else, including iTerm2, Apple Terminal and
+  anything inside tmux. Lower resolution, but it works in every terminal.
+
+Set `ANCHR_IMAGE_BACKEND` to override the choice:
+
+```sh
+ANCHR_IMAGE_BACKEND=halfblock anchr   # force halfblocks
+ANCHR_IMAGE_BACKEND=kitty     anchr   # force kitty graphics
+ANCHR_IMAGE_BACKEND=none      anchr   # disable image previews
+```
+
+Images are fetched up to 10 MB; larger ones report that they were truncated.
+WebP, AVIF and SVG are not decoded (SVG still previews as its XML source).

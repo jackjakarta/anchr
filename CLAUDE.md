@@ -82,7 +82,7 @@ transient `m.status`, and returns a `tea.Cmd` for the I/O (`D` opens the save
 prompt first and starts its `tea.Cmd`s on confirm). They are:
 
 - `D` — download (in-TUI save-path prompt + progress bar, see below)
-- `p` — preview popup (async ranged fetch, 64 KB)
+- `p` — preview popup (async ranged fetch, 64 KB; 10 MB for images)
 - `y` / `Y` — copy the object key / `s3://bucket/key` URI to the clipboard
 - `u` — presigned GET URL (valid `presignExpiry`, 1h), copied to the clipboard
 - `s` / `S` — cycle sort field / toggle direction
@@ -148,14 +148,73 @@ files:
   content. Opening it shows a spinner, then an async ranged fetch fills it in;
   `isBinary` (invalid UTF-8 or a NUL byte) swaps text for a "preview unavailable"
   note. The metadata pane is separate and always visible (when wide enough).
+  Image payloads take a separate path — see "Inline image previews" below.
+
+### Inline image previews
+
+`p` on a decodable image renders it in the popup. Two files carry it, both pure
+functions with no Bubble Tea coupling:
+
+- **`image.go`** — `decodeImage` (stdlib PNG/JPEG/GIF only; **no**
+  `golang.org/x/image`, so WebP/AVIF are unsupported by design and the binary
+  stays dependency-free), `imageConfig` (header-only sniff, cheap enough for the
+  UI thread), `fitCells`, `scaleTo` (hand-rolled box-average downscaler) and
+  `renderHalfblocks`.
+- **`imageterm.go`** — `detectImageBackend` and `kittyRows`.
+
+**A halfblock cell is 1 column × 2 pixel rows** (`▀`, fg = top pixel, bg =
+bottom), so a `cols × rows` cell box holds `cols × rows*2` roughly-square
+pixels. That factor of two is why `fitCells` divides by `imgW*2`; get it wrong
+and every image is stretched or squashed by 2×.
+
+**Backends.** `backendKitty` on kitty/Ghostty/WezTerm, `backendHalfblock`
+everywhere else (iTerm2, Apple Terminal, and anything under tmux, which is
+downgraded deliberately). `ANCHR_IMAGE_BACKEND=kitty|halfblock|none` overrides
+detection — the only way to exercise the other path on a given machine.
+
+iTerm2's own inline-image protocol is **not** implemented: its image is drawn
+from the cursor and consumes rows the TUI must also emit, which cannot be
+reconciled with a fixed-height frame. Kitty's protocol can, via virtual
+placements.
+
+**Why virtual placements.** Bubble Tea's standard renderer skips re-emitting a
+line that is unchanged from the last frame (`standard_renderer.go`, `canSkip`),
+and a classic kitty placement is an overlay that outlives the text that drew it.
+Virtual placements bind the image to ordinary Unicode placeholder cells
+(`kitty.Placeholder` + two `kitty.Diacritic`s, fg = image ID), which scroll,
+diff and erase like any other text. Verified: `lipgloss.Width` counts a
+placeholder cell as 1 and an APC payload as 0, so `assertGrid` holds.
+
+Because one fixed `kittyImageID` is reused and a virtual placement only paints
+where its placeholders are, **no delete escape is needed on close** — the image
+vanishes with the popup and the next preview overwrites the slot.
+
+**Gotchas:**
+
+- The transmission escape rides on row 0 of the image block, *not* a direct
+  stdout write — Bubble Tea owns the stream and a concurrent write interleaves
+  mid-frame. It is safe there because `ansi.Truncate` short-circuits on a line
+  whose measured width already fits.
+- **Image rows bypass `truncate()`.** That helper counts runes, so it would
+  slice through an SGR run or a kitty payload. Rows are pre-sized to fit instead.
+- Rows are rasterised for one specific box, so `renderImageBody` refuses to
+  print them when the box has changed (`img.cols > innerW || len(rows) >
+  bodyRows`) and shows the spinner until the resize re-render lands. Without
+  that guard a shrink overflows the popup and tears the whole frame — this is
+  what `preview-image-stale-rows` in `view_test.go` covers.
+- `previewBoxWidth`/`Height` are shared with the save prompt; the image path has
+  its own `imageBoxWidth`/`Height`/`imageBodyRows`. Don't merge them.
+- Compositing uses `previewBgRGBA`, a concrete `color.RGBA`, **not** `cDarkBg`:
+  `lipgloss.Color.RGBA()` resolves through the global renderer's color profile,
+  so off a TTY every palette color reports black.
 
 ### Async and messages
 
 All I/O (listing, downloading, presign, preview fetch) runs off the UI thread as
 `tea.Cmd`s that return one of the message types in `messages.go`
 (`ObjectsLoadedMsg`, `DownloadProgressMsg`, `FileDownloadedMsg`,
-`PresignedURLGeneratedMsg`, `ObjectPreviewLoadedMsg`). The root `Update` switches
-on these. When adding new async work, define a `Msg` type, return a `tea.Cmd`
+`PresignedURLGeneratedMsg`, `ObjectPreviewLoadedMsg`, `ImageRenderedMsg`). The
+root `Update` switches on these. When adding new async work, define a `Msg` type, return a `tea.Cmd`
 closure that produces it, and handle it in `Update` — never block in `Update`
 itself. (`BucketSelectedMsg`/`NavigateMsg` are defined but currently inert — not
 dispatched anywhere.)
